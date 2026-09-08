@@ -8,10 +8,10 @@ RDP или SSH — и утилита зовёт `mstsc` или `ssh`. Списо
 
 ```
   Machines   (arrows move, letters jump, Enter connects, Esc quits)
-  * home  desktop-ib88isg.tail08a9a5.ts.net  rdp  Gamer  Xeon
-> * gpu   mks68i7rtx.tail08a9a5.ts.net       rdp         RTX 4060
-  * dev   re-7lqd67ahcm0r.tail08a9a5.ts.net  ssh
-  . nuc   100.100.10.14                      ssh         в гараже
+  * home  home-pc.tailnet-name.ts.net   rdp  user   в гостиной
+> * gpu   gpu-rig.tailnet-name.ts.net   rdp  user   RTX 4060
+  * dev   dev-box.tailnet-name.ts.net   ssh
+  . nuc   100.100.10.14                 ssh  root   в гараже
 ```
 
 `*` — машина в сети прямо сейчас, `.` — офлайн, `?` — её нет в тейлнете (статус читается
@@ -55,9 +55,9 @@ irm https://raw.githubusercontent.com/XYphrodite/fleet-connect/master/install.ps
 
 ```csv
 Name,Host,Protocol,User,SshAlias,Port,Note
-home,desktop-ib88isg.tail08a9a5.ts.net,Rdp,Gamer,home,,Xeon
-gpu,mks68i7rtx.tail08a9a5.ts.net,Rdp,Gamer,gpu,,RTX 4060
-dev,re-7lqd67ahcm0r.tail08a9a5.ts.net,Ssh,,,,
+home,home-pc.tailnet-name.ts.net,Rdp,user,home,,в гостиной
+gpu,gpu-rig.tailnet-name.ts.net,Rdp,user,gpu,,RTX 4060
+dev,dev-box.tailnet-name.ts.net,Ssh,,,,
 nuc,100.100.10.14,Ssh,root,,2222,в гараже
 ```
 
