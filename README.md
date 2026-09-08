@@ -24,8 +24,13 @@ irm https://raw.githubusercontent.com/XYphrodite/fleet-connect/master/install.ps
 ```
 
 Права администратора не нужны: это машина, *с которой* вы подключаетесь. Установщик
-кладёт `fcon.ps1` и шим `fcon.cmd` в `%LOCALAPPDATA%\Programs\fleet-connect` и добавляет
-папку в PATH. Та же команда обновляет утилиту — список машин при этом не трогается.
+кладёт `fleet-connect.ps1` и шим `fcon.cmd` в `%LOCALAPPDATA%\Programs\fleet-connect` и
+добавляет папку в PATH. Та же команда обновляет утилиту — список машин не трогается.
+
+Скрипт намеренно называется не `fcon.ps1`: PowerShell находит на PATH `.ps1` раньше
+одноимённого `.cmd`, и тогда `fcon` запускал бы скрипт напрямую — а политика выполнения
+`Restricted`, с которой Windows приезжает с завода, это запретит. Пока под именем `fcon`
+отзывается только `.cmd`, каждый запуск идёт через `-ExecutionPolicy Bypass`.
 
 ## Команды
 
