@@ -1,0 +1,6 @@
+# The machine list lives in %LOCALAPPDATA%\fleet-connect, not here, but a copy dragged
+# into the repo for a moment would carry host names and user names into git history.
+pcs.csv
+pcs.csv.bak
+*.rdp
+
