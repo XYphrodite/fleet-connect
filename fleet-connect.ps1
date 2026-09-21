@@ -18,6 +18,7 @@
         fcon sync mks68 xeon  push to selected machines
         fcon import           merge the tailnet into the list
         fcon setup            enable RDP/SSH on this machine (requires admin)
+        fcon update           update fcon from GitHub (progress bar + status)
         fcon edit             open the CSV in an editor
         fcon path             print where the CSV lives
         fcon help             this text
@@ -1070,6 +1071,139 @@ function Invoke-Setup {
     return $code
 }
 
+function Invoke-Update {
+    param([string[]] $UpdateArgs)
+
+    if ($UpdateArgs.Count -eq 1 -and $UpdateArgs[0] -match '^(?i)(help|-h|/\?|--help)$') {
+        Write-Host ''
+        Write-Host '  fcon update - update fcon from GitHub' -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host '    fcon update                update to latest master'
+        Write-Host '    fcon update --check        only check if update is available'
+        Write-Host '    fcon update --help         this text'
+        Write-Host ''
+        Write-Host '  Mirrors install.ps1: uses $env:FLEET_CONNECT_REPO / _REF / _DIR if set.'
+        Write-Host '  Shows progress bar and status text like the panel.'
+        Write-Host ''
+        return 0
+    }
+
+    $checkOnly = $false
+    $unknown = @()
+    foreach ($a in $UpdateArgs) {
+        switch -Regex ($a) {
+            '^(?i)--?check$' { $checkOnly = $true; continue }
+            default { $unknown += $a }
+        }
+    }
+    if ($unknown.Count -gt 0) {
+        Write-Fail "Unknown option(s): $($unknown -join ' '). Use fcon update --help"
+        return 1
+    }
+
+    $repo   = if ($env:FLEET_CONNECT_REPO) { $env:FLEET_CONNECT_REPO } else { 'XYphrodite/fleet-connect' }
+    $ref    = if ($env:FLEET_CONNECT_REF)  { $env:FLEET_CONNECT_REF }  else { 'master' }
+    $target = if ($env:FLEET_CONNECT_DIR)  { $env:FLEET_CONNECT_DIR }  else { Join-Path $env:LOCALAPPDATA 'Programs\fleet-connect' }
+    $source = "https://raw.githubusercontent.com/$repo/$ref/fleet-connect.ps1"
+
+    # Ensure invariant progress rendering even on hosts with $ProgressPreference=SilentlyContinue
+    $prevPref = $ProgressPreference
+    $ProgressPreference = 'Continue'
+    try {
+        Write-Progress -Activity 'fcon update' -Status 'Проверка обновлений...' -PercentComplete 5
+        Write-Host ''
+        Write-Host '==> Проверка обновлений...' -ForegroundColor Cyan
+        Write-Host "    $source" -ForegroundColor DarkGray
+        Start-Sleep -Milliseconds 150
+
+        if ($checkOnly) {
+            Write-Progress -Activity 'fcon update' -Status 'Проверка доступности...' -PercentComplete 40
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $head = Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 15 -Method Head -ErrorAction Stop
+                Write-Progress -Activity 'fcon update' -Completed
+                Write-Host '  Доступен: ' -NoNewline -ForegroundColor Green
+                Write-Host $source -ForegroundColor DarkGray
+                Write-Host "  Репозиторий: $repo  ветка: $ref" -ForegroundColor DarkGray
+                return 0
+            } catch {
+                Write-Progress -Activity 'fcon update' -Completed
+                Write-Fail "Не удалось проверить обновление: $($_.Exception.Message)"
+                return 1
+            }
+        }
+
+        Write-Progress -Activity 'fcon update' -Status 'Загрузка fleet-connect.ps1...' -PercentComplete 25
+        Write-Host '==> Загрузка fleet-connect.ps1...' -ForegroundColor Cyan
+        Write-Host "    $source" -ForegroundColor DarkGray
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $resp = $null
+        try {
+            $resp = Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+        } catch {
+            Write-Progress -Activity 'fcon update' -Completed
+            throw "Could not download fleet-connect.ps1 from $repo ($ref). ($($_.Exception.Message))"
+        }
+
+        Write-Progress -Activity 'fcon update' -Status 'Проверка файла...' -PercentComplete 55
+        Write-Host '==> Проверка файла...' -ForegroundColor Cyan
+        $body = [string]$resp.Content
+        if ($body -notmatch '(?m)^\s*#Requires -Version') {
+            Write-Progress -Activity 'fcon update' -Completed
+            throw "What came back from $source is not the script. Is the repository published and does it have a $ref branch?"
+        }
+        Start-Sleep -Milliseconds 200
+        Write-Host '    файл корректен' -ForegroundColor DarkGray
+
+        Write-Progress -Activity 'fcon update' -Status "Установка в $target..." -PercentComplete 80
+        Write-Host "==> Установка в $target..." -ForegroundColor Cyan
+        $null = New-Item -ItemType Directory -Force -Path $target
+
+        $scriptPath = Join-Path $target 'fleet-connect.ps1'
+        [IO.File]::WriteAllText($scriptPath, $body, (New-Object Text.UTF8Encoding($false)))
+        Write-Host "    fleet-connect.ps1 обновлен" -ForegroundColor DarkGray
+
+        $stale = Join-Path $target 'fcon.ps1'
+        if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
+
+        $shim = @(
+            '@echo off',
+            'setlocal',
+            'set "PS=powershell"',
+            'where pwsh >nul 2>nul',
+            'if not errorlevel 1 set "PS=pwsh"',
+            '"%PS%" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0fleet-connect.ps1" %*',
+            'exit /b %errorlevel%'
+        )
+        Set-Content -LiteralPath (Join-Path $target 'fcon.cmd') -Value $shim -Encoding ASCII
+        Write-Host '    fcon.cmd обновлен' -ForegroundColor DarkGray
+
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if (($userPath -split ';') -notcontains $target) {
+            Write-Host '==> Добавление в PATH...' -ForegroundColor Cyan
+            $updated = if ([string]::IsNullOrEmpty($userPath)) { $target } else { "$userPath;$target" }
+            [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
+        }
+        if (($env:Path -split ';') -notcontains $target) { $env:Path = "$env:Path;$target" }
+
+        Write-Progress -Activity 'fcon update' -Status 'Готово!' -PercentComplete 100
+        Start-Sleep -Milliseconds 300
+        Write-Progress -Activity 'fcon update' -Completed
+
+        Write-Host ''
+        Write-Host "  fleet-connect обновлен: $target" -ForegroundColor Green
+        Write-Host "  версия: $repo@$ref" -ForegroundColor DarkGray
+        $listPath = if ($env:FLEET_CONNECT_CSV) { $env:FLEET_CONNECT_CSV } else { Join-Path $env:LOCALAPPDATA 'fleet-connect\pcs.csv' }
+        Write-Host "  список машин: $listPath" -ForegroundColor DarkGray
+        Write-Host ''
+        Write-Host '  Готово. Перезапусти терминал если fcon не найдена.' -ForegroundColor DarkGray
+        return 0
+    } finally {
+        $ProgressPreference = $prevPref
+        try { Write-Progress -Activity 'fcon update' -Completed } catch { }
+    }
+}
+
 function Invoke-Help {
     Get-Help -Detailed $PSCommandPath | Out-String | Write-Host
     return 0
@@ -1160,6 +1294,12 @@ try {
             if ($Via) { $setupArgs += $Via }
             if ($Extra) { $setupArgs += $Extra }
             exit (Invoke-Setup $setupArgs)
+        }
+        '^(?i)update$'        {
+            $updArgs = @()
+            if ($Via) { $updArgs += $Via }
+            if ($Extra) { $updArgs += $Extra }
+            exit (Invoke-Update $updArgs)
         }
         '^(?i)edit$'          { exit (Invoke-Edit) }
         '^(?i)path$'          { Write-Host (Get-ListPath); exit 0 }
