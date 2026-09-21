@@ -1110,31 +1110,31 @@ function Invoke-Update {
     $prevPref = $ProgressPreference
     $ProgressPreference = 'Continue'
     try {
-        Write-Progress -Activity 'fcon update' -Status 'Проверка обновлений...' -PercentComplete 5
+        Write-Progress -Activity 'fcon update' -Status 'Checking for updates...' -PercentComplete 5
         Write-Host ''
-        Write-Host '==> Проверка обновлений...' -ForegroundColor Cyan
+        Write-Host '==> Checking for updates...' -ForegroundColor Cyan
         Write-Host "    $source" -ForegroundColor DarkGray
         Start-Sleep -Milliseconds 150
 
         if ($checkOnly) {
-            Write-Progress -Activity 'fcon update' -Status 'Проверка доступности...' -PercentComplete 40
+            Write-Progress -Activity 'fcon update' -Status 'Checking availability...' -PercentComplete 40
             try {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 $head = Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 15 -Method Head -ErrorAction Stop
                 Write-Progress -Activity 'fcon update' -Completed
-                Write-Host '  Доступен: ' -NoNewline -ForegroundColor Green
+                Write-Host '  Available: ' -NoNewline -ForegroundColor Green
                 Write-Host $source -ForegroundColor DarkGray
-                Write-Host "  Репозиторий: $repo  ветка: $ref" -ForegroundColor DarkGray
+                Write-Host "  Repository: $repo  ref: $ref" -ForegroundColor DarkGray
                 return 0
             } catch {
                 Write-Progress -Activity 'fcon update' -Completed
-                Write-Fail "Не удалось проверить обновление: $($_.Exception.Message)"
+                Write-Fail "Failed to check update: $($_.Exception.Message)"
                 return 1
             }
         }
 
-        Write-Progress -Activity 'fcon update' -Status 'Загрузка fleet-connect.ps1...' -PercentComplete 25
-        Write-Host '==> Загрузка fleet-connect.ps1...' -ForegroundColor Cyan
+        Write-Progress -Activity 'fcon update' -Status 'Downloading fleet-connect.ps1...' -PercentComplete 25
+        Write-Host '==> Downloading fleet-connect.ps1...' -ForegroundColor Cyan
         Write-Host "    $source" -ForegroundColor DarkGray
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         $resp = $null
@@ -1145,23 +1145,23 @@ function Invoke-Update {
             throw "Could not download fleet-connect.ps1 from $repo ($ref). ($($_.Exception.Message))"
         }
 
-        Write-Progress -Activity 'fcon update' -Status 'Проверка файла...' -PercentComplete 55
-        Write-Host '==> Проверка файла...' -ForegroundColor Cyan
+        Write-Progress -Activity 'fcon update' -Status 'Verifying file...' -PercentComplete 55
+        Write-Host '==> Verifying file...' -ForegroundColor Cyan
         $body = [string]$resp.Content
         if ($body -notmatch '(?m)^\s*#Requires -Version') {
             Write-Progress -Activity 'fcon update' -Completed
             throw "What came back from $source is not the script. Is the repository published and does it have a $ref branch?"
         }
         Start-Sleep -Milliseconds 200
-        Write-Host '    файл корректен' -ForegroundColor DarkGray
+        Write-Host '    file is valid' -ForegroundColor DarkGray
 
-        Write-Progress -Activity 'fcon update' -Status "Установка в $target..." -PercentComplete 80
-        Write-Host "==> Установка в $target..." -ForegroundColor Cyan
+        Write-Progress -Activity 'fcon update' -Status "Installing to $target..." -PercentComplete 80
+        Write-Host "==> Installing to $target..." -ForegroundColor Cyan
         $null = New-Item -ItemType Directory -Force -Path $target
 
         $scriptPath = Join-Path $target 'fleet-connect.ps1'
         [IO.File]::WriteAllText($scriptPath, $body, (New-Object Text.UTF8Encoding($false)))
-        Write-Host "    fleet-connect.ps1 обновлен" -ForegroundColor DarkGray
+        Write-Host "    fleet-connect.ps1 updated" -ForegroundColor DarkGray
 
         $stale = Join-Path $target 'fcon.ps1'
         if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
@@ -1176,27 +1176,27 @@ function Invoke-Update {
             'exit /b %errorlevel%'
         )
         Set-Content -LiteralPath (Join-Path $target 'fcon.cmd') -Value $shim -Encoding ASCII
-        Write-Host '    fcon.cmd обновлен' -ForegroundColor DarkGray
+        Write-Host '    fcon.cmd updated' -ForegroundColor DarkGray
 
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         if (($userPath -split ';') -notcontains $target) {
-            Write-Host '==> Добавление в PATH...' -ForegroundColor Cyan
+            Write-Host '==> Adding to PATH...' -ForegroundColor Cyan
             $updated = if ([string]::IsNullOrEmpty($userPath)) { $target } else { "$userPath;$target" }
             [Environment]::SetEnvironmentVariable('Path', $updated, 'User')
         }
         if (($env:Path -split ';') -notcontains $target) { $env:Path = "$env:Path;$target" }
 
-        Write-Progress -Activity 'fcon update' -Status 'Готово!' -PercentComplete 100
+        Write-Progress -Activity 'fcon update' -Status 'Done!' -PercentComplete 100
         Start-Sleep -Milliseconds 300
         Write-Progress -Activity 'fcon update' -Completed
 
         Write-Host ''
-        Write-Host "  fleet-connect обновлен: $target" -ForegroundColor Green
-        Write-Host "  версия: $repo@$ref" -ForegroundColor DarkGray
+        Write-Host "  fleet-connect updated: $target" -ForegroundColor Green
+        Write-Host "  version: $repo@$ref" -ForegroundColor DarkGray
         $listPath = if ($env:FLEET_CONNECT_CSV) { $env:FLEET_CONNECT_CSV } else { Join-Path $env:LOCALAPPDATA 'fleet-connect\pcs.csv' }
-        Write-Host "  список машин: $listPath" -ForegroundColor DarkGray
+        Write-Host "  machine list: $listPath" -ForegroundColor DarkGray
         Write-Host ''
-        Write-Host '  Готово. Перезапусти терминал если fcon не найдена.' -ForegroundColor DarkGray
+        Write-Host '  Done. Restart terminal if fcon is not found.' -ForegroundColor DarkGray
         return 0
     } finally {
         $ProgressPreference = $prevPref

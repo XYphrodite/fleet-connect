@@ -84,7 +84,7 @@ try {
   Assert (Test-Path -LiteralPath $shim) "mocked update writes fcon.cmd"
   Assert ($script:progressCalls.Count -ge 4) "progress bar called >=4 times (got $($script:progressCalls.Count))"
   Assert ($script:progressCalls -match 'fcon update') "progress bar activity is 'fcon update'"
-  Assert ($script:progressCalls -match 'Готово') "progress bar reaches 'Готово'"
+  Assert ($script:progressCalls -match 'Done') "progress bar reaches 'Done'"
 
   # --check path with mock
   $script:progressCalls = @()
@@ -97,6 +97,14 @@ try {
   Remove-Item Function:\Invoke-WebRequest -ErrorAction SilentlyContinue
   Remove-Item Function:\Write-Progress -ErrorAction SilentlyContinue
 }
+
+# Test 5: file must be ASCII only (Windows PowerShell 5.1 compat) and parse without errors
+$bytes = [IO.File]::ReadAllBytes($scriptPath)
+$nonAscii = @($bytes | Where-Object { $_ -gt 127 })
+Assert ($nonAscii.Count -eq 0) "fleet-connect.ps1 is ASCII only for WinPS 5.1 compat (non-ASCII bytes: $($nonAscii.Count))"
+$tokensErr = $null; $parseErrs = $null
+$null = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokensErr, [ref]$parseErrs)
+Assert ($parseErrs.Count -eq 0) "fleet-connect.ps1 parses with 0 errors (got $($parseErrs.Count))"
 
 if ($failed -gt 0) { Write-Host "`n$failed test(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "`nAll update tests passed" -ForegroundColor Green
