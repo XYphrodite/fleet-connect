@@ -12,7 +12,12 @@
         fcon gpu              connect to the machine named gpu, its own protocol
         fcon gpu ssh          the same machine over SSH instead
         fcon list             print the list and exit
+        fcon add              add a new machine to the list
+        fcon add gpu host     add with positional args (see help)
+        fcon sync             push pcs.csv to remote machines
+        fcon sync mks68 xeon  push to selected machines
         fcon import           merge the tailnet into the list
+        fcon setup            enable RDP/SSH on this machine (requires admin)
         fcon edit             open the CSV in an editor
         fcon path             print where the CSV lives
         fcon help             this text
@@ -35,6 +40,7 @@
 param(
     [Parameter(Position = 0)] [string] $Name,
     [Parameter(Position = 1)] [string] $Via,
+    [Parameter(ValueFromRemainingArguments = $true)] [string[]] $Extra,
     [switch] $NoStatus,
     [switch] $Yes,
     [switch] $Help
@@ -589,6 +595,481 @@ function Invoke-Import {
     return 0
 }
 
+function Invoke-Add {
+    param([string[]] $AddArgs)
+
+    # Help for the subcommand: fcon add help / fcon add -h
+    if ($AddArgs.Count -eq 1 -and $AddArgs[0] -match '^(?i)(help|-h|/\?|--help)$') {
+        Write-Host ''
+        Write-Host '  fcon add - add a new machine to the list' -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host '    fcon add                                   interactive prompts'
+        Write-Host '    fcon add <name> <host> [rdp|ssh]            positional'
+        Write-Host '    fcon add <name> <host> --user <user> --port <port> --note <text> --alias <sshAlias>'
+        Write-Host ''
+        Write-Host '  Flags (order does not matter):'
+        Write-Host '    --user, -u       login for RDP and SSH (when no alias)'
+        Write-Host '    --alias          Host entry from ~/.ssh/config (when set, SSH uses only it)'
+        Write-Host '    --port           non-default port'
+        Write-Host '    --note           free text shown in the list'
+        Write-Host '    --protocol, -p   rdp or ssh (also as 3rd positional arg)'
+        Write-Host ''
+        Write-Host '  Examples:'
+        Write-Host '    fcon add srv1 10.0.0.5 rdp --user admin --note "office"'
+        Write-Host '    fcon add dev dev-box.ts.net ssh --alias dev --port 2222'
+        Write-Host ''
+        return 0
+    }
+
+    $addName = $null; $addHost = $null; $addProtoText = $null
+    $addUser = $null; $addAlias = $null; $addPort = $null; $addNote = $null
+    $positional = New-Object 'System.Collections.Generic.List[string]'
+
+    for ($i = 0; $i -lt $AddArgs.Count; $i++) {
+        $a = $AddArgs[$i]
+        switch -Regex ($a) {
+            '^(?i)--?(user|u)$' {
+                if ($i + 1 -ge $AddArgs.Count) { Write-Fail "Missing value for $a"; return 1 }
+                $addUser = $AddArgs[++$i]; continue
+            }
+            '^(?i)--?(alias|ssh-?alias)$' {
+                if ($i + 1 -ge $AddArgs.Count) { Write-Fail "Missing value for $a"; return 1 }
+                $addAlias = $AddArgs[++$i]; continue
+            }
+            '^(?i)--?port$' {
+                if ($i + 1 -ge $AddArgs.Count) { Write-Fail "Missing value for $a"; return 1 }
+                $addPort = $AddArgs[++$i]; continue
+            }
+            '^(?i)--?note$' {
+                if ($i + 1 -ge $AddArgs.Count) { Write-Fail "Missing value for $a"; return 1 }
+                $addNote = $AddArgs[++$i]; continue
+            }
+            '^(?i)--?(protocol|proto|p)$' {
+                if ($i + 1 -ge $AddArgs.Count) { Write-Fail "Missing value for $a"; return 1 }
+                $addProtoText = $AddArgs[++$i]; continue
+            }
+            default { $positional.Add($a) }
+        }
+    }
+
+    # Positional mapping: name, host, [protocol|user] - protocol is detected by value.
+    if ($positional.Count -ge 1 -and -not $addName) { $addName = $positional[0] }
+    if ($positional.Count -ge 2 -and -not $addHost) { $addHost = $positional[1] }
+    if ($positional.Count -ge 3) {
+        $third = $positional[2]
+        if (-not $addProtoText -and $third -match '^(?i)r(dp)?|s(sh)?$') { $addProtoText = $third }
+        elseif (-not $addUser) { $addUser = $third }
+    }
+    if ($positional.Count -ge 4 -and -not $addUser) { $addUser = $positional[3] }
+    # Extra positionals beyond 4 are treated as note if not set
+    if ($positional.Count -ge 5 -and -not $addNote) { $addNote = ($positional.GetRange(4, $positional.Count - 4) -join ' ') }
+
+    $interactive = Test-Interactive
+
+    if (-not $addName) {
+        if (-not $interactive) { Write-Fail 'Name is required. Usage: fcon add <name> <host> [rdp|ssh]'; return 1 }
+        $addName = (Read-Host '  Name (short, e.g. gpu)').Trim()
+        if (-not $addName) { Write-Note 'Cancelled.'; return 2 }
+    }
+    if (-not $addHost) {
+        if (-not $interactive) { Write-Fail 'Host is required. Usage: fcon add <name> <host>'; return 1 }
+        $addHost = (Read-Host '  Host (address or DNS)').Trim()
+        if (-not $addHost) { Write-Note 'Cancelled.'; return 2 }
+    }
+
+    if (-not $addProtoText) {
+        if ($interactive -and $positional.Count -eq 0 -and $AddArgs.Count -eq 0) {
+            $ans = (Read-Host '  Protocol [rdp/ssh, default rdp]').Trim()
+            if ($ans) { $addProtoText = $ans }
+        }
+    }
+
+    try { $proto = ConvertTo-Protocol $addProtoText } catch { Write-Fail $_.Exception.Message; return 1 }
+
+    if (-not $addUser -and $interactive -and $AddArgs.Count -eq 0) {
+        $addUser = (Read-Host '  User (empty = none)').Trim()
+    }
+    if (-not $addAlias -and $interactive -and $AddArgs.Count -eq 0) {
+        $addAlias = (Read-Host '  SshAlias (empty = none, uses Host from ~/.ssh/config)').Trim()
+    }
+    if (-not $addPort -and $interactive -and $AddArgs.Count -eq 0) {
+        $addPort = (Read-Host '  Port (empty = default)').Trim()
+    }
+    if (-not $addNote -and $interactive -and $AddArgs.Count -eq 0) {
+        $addNote = (Read-Host '  Note (empty = none)').Trim()
+    }
+
+    $existing = Read-PcList
+    $dup = @($existing | Where-Object { $_.Name -eq $addName })
+    if ($dup.Count -gt 0) {
+        Write-Fail "A machine named '$addName' already exists."
+        return 1
+    }
+    $dupHost = @($existing | Where-Object { $_.Address -eq $addHost })
+    if ($dupHost.Count -gt 0) {
+        Write-Note "Note: another machine '$($dupHost[0].Name)' already uses host '$addHost'."
+    }
+
+    $pc = [PcModel]::new()
+    $pc.Name     = $addName
+    $pc.Address  = $addHost
+    $pc.Protocol = $proto
+    $pc.User     = if ($addUser) { $addUser } else { '' }
+    $pc.SshAlias = if ($addAlias) { $addAlias } else { '' }
+    $pc.Port     = if ($addPort) { $addPort } else { '' }
+    $pc.Note     = if ($addNote) { $addNote } else { '' }
+
+    $all = @($existing) + $pc
+    Write-PcList $all
+
+    Write-Host ''
+    Write-Host "  Added $addName  $addHost  $($proto.ToString().ToLowerInvariant())" -ForegroundColor Green
+    if ($pc.User) { Write-Note "  user: $($pc.User)" }
+    if ($pc.SshAlias) { Write-Note "  alias: $($pc.SshAlias)" }
+    if ($pc.Port) { Write-Note "  port: $($pc.Port)" }
+    Write-Note "  list: $(Get-ListPath)"
+    Write-Host ''
+    return 0
+}
+
+function Invoke-Sync {
+    param([string[]] $SyncArgs)
+
+    if ($SyncArgs.Count -eq 1 -and $SyncArgs[0] -match '^(?i)(help|-h|/\?|--help)$') {
+        Write-Host ''
+        Write-Host '  fcon sync - push pcs.csv to remote machines' -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host '    fcon sync                          push to all known machines (except self)'
+        Write-Host '    fcon sync mks68 xeon home-pc       push to listed names'
+        Write-Host '    fcon sync --dry-run                show what would be pushed'
+        Write-Host ''
+        Write-Host '  Uses ssh/scp (OpenSSH). For each target:'
+        Write-Host '    - creates %LOCALAPPDATA%\fleet-connect if missing'
+        Write-Host '    - tries scp, falls back to "more" pipe for hosts without sftp'
+        Write-Host '  SshAlias from the list is used when present, otherwise User@Host.'
+        Write-Host ''
+        return 0
+    }
+
+    $localPath = Get-ListPath
+    if (-not (Test-Path -LiteralPath $localPath)) { Write-Fail "No local list at $localPath"; return 1 }
+    $allPcs = Read-PcList
+    if ($allPcs.Count -eq 0) { Write-Fail "List is empty"; return 1 }
+
+    $dryRun = $false
+    $wants = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($a in $SyncArgs) {
+        if ($a -match '^(?i)--dry-run$') { $dryRun = $true; continue }
+        $wants.Add($a)
+    }
+
+    $targets = @()
+    if ($wants.Count -eq 0) {
+        $targets = $allPcs
+    } else {
+        foreach ($want in $wants) {
+            $hits = @($allPcs | Where-Object { $_.Name -eq $want })
+            if ($hits.Count -eq 0) { $hits = @($allPcs | Where-Object { $_.Name -like "$want*" }) }
+            if ($hits.Count -eq 0) { $hits = @($allPcs | Where-Object { $_.Address -eq $want }) }
+            if ($hits.Count -eq 0) { Write-Fail "No machine matches '$want'"; return 1 }
+            if ($hits.Count -gt 1) { Write-Fail "'$want' matches multiple: $($hits.Name -join ', ')"; return 1 }
+            $targets += $hits[0]
+        }
+    }
+
+    # Skip self: detect via Tailscale Self DNSName/Address
+    try {
+        $machines = Get-TailnetMachines
+        $selfDns = $null; $selfAddr = $null; $selfName = $null
+        if ($machines) {
+            # Re-read Self directly for accuracy
+            $exe = Resolve-Tailscale
+            if ($exe) {
+                $raw = & $exe status --json 2>$null | Out-String
+                $j = $raw | ConvertFrom-Json
+                $self = Get-Prop $j 'Self'
+                if ($self) {
+                    $selfDns = ([string](Get-Prop $self 'DNSName')).TrimEnd('.')
+                    $ips = @(Get-Prop $self 'TailscaleIPs')
+                    $selfAddr = $ips | Where-Object { $_ -and $_ -notmatch ':' } | Select-Object -First 1
+                    $selfName = [string](Get-Prop $self 'HostName')
+                }
+            }
+        }
+        if ($selfDns -or $selfAddr) {
+            $filtered = @()
+            foreach ($t in $targets) {
+                $isSelf = $false
+                if ($selfDns -and ($t.Address -eq $selfDns -or $t.Address -eq "$selfDns.")) { $isSelf = $true }
+                if ($selfAddr -and $t.Address -eq $selfAddr) { $isSelf = $true }
+                if ($t.Name -eq 'RIO' -and $selfName -eq 'RE-7LQD67AHCM0R') { $isSelf = $true }
+                if ($isSelf) { Write-Note "Skipping self $($t.Name)"; continue }
+                $filtered += $t
+            }
+            $targets = $filtered
+        }
+    } catch { }
+
+    if ($targets.Count -eq 0) { Write-Note "Nothing to sync."; return 0 }
+
+    $ssh = Get-Command 'ssh.exe' -ErrorAction SilentlyContinue
+    $scp = Get-Command 'scp.exe' -ErrorAction SilentlyContinue
+    if (-not $ssh) { Write-Fail "No ssh.exe on PATH."; return 1 }
+
+    Write-Host ''
+    Write-Host "  Local: $localPath ($((Get-Content -LiteralPath $localPath | Measure-Object -Line).Lines) lines)" -ForegroundColor DarkGray
+    if ($dryRun) { Write-Host "  Dry run - no files will be written" -ForegroundColor Yellow }
+    Write-Host ''
+
+    $failed = 0; $okCount = 0
+    foreach ($pc in $targets) {
+        $sshTarget = if ($pc.SshAlias) { $pc.SshAlias } elseif ($pc.User) { "$($pc.User)@$($pc.Address)" } else { $pc.Address }
+        $portArgsSsh = @(); $portArgsScp = @()
+        if ($pc.Port -and -not $pc.SshAlias) {
+            $portArgsSsh = @('-p', $pc.Port)
+            $portArgsScp = @('-P', $pc.Port)
+        }
+
+        Write-Host "  -> $($pc.Name) ($sshTarget) ..." -NoNewline
+
+        if ($dryRun) { Write-Host " dry-run" -ForegroundColor DarkGray; $okCount++; continue }
+
+        # 1) ensure remote dir exists
+        try { & $ssh.Source @portArgsSsh $sshTarget 'mkdir "%LOCALAPPDATA%\fleet-connect" 2>nul & echo ok' 2>$null | Out-Null } catch { }
+
+        $pushed = $false
+
+        # 2) push via 'more' pipe - works on all Windows OpenSSH hosts, even when sftp is disabled
+        #    (home-pc has sftp subsystem off, so scp fails; 'more' is always available)
+        try {
+            Get-Content -LiteralPath $localPath -Raw -Encoding UTF8 | & $ssh.Source @portArgsSsh $sshTarget 'more > "%LOCALAPPDATA%\fleet-connect\pcs.csv"' 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) { $pushed = $true }
+        } catch { }
+
+        # 3) fallback to scp if pipe failed and scp is available
+        if (-not $pushed -and $scp) {
+            $null = & $scp.Source -o StrictHostKeyChecking=accept-new @portArgsScp $localPath "${sshTarget}:C:/Users/local/AppData/Local/fleet-connect/pcs.csv" 2>$null
+            if ($LASTEXITCODE -eq 0) { $pushed = $true }
+        }
+
+        if ($pushed) {
+            # verify by reading first line
+            $verifyOk = $false
+            try {
+                $head = & $ssh.Source @portArgsSsh $sshTarget 'type "%LOCALAPPDATA%\fleet-connect\pcs.csv"' 2>$null | Select-Object -First 1
+                if ($head -match 'Name.*Host') { $verifyOk = $true }
+            } catch { }
+            if ($verifyOk) { Write-Host " ok" -ForegroundColor Green; $okCount++ }
+            else { Write-Host " ok (unverified)" -ForegroundColor Yellow; $okCount++ }
+        } else {
+            Write-Host " failed" -ForegroundColor Red
+            $failed++
+        }
+    }
+
+    Write-Host ''
+    if ($failed -gt 0) { Write-Fail "$failed of $($targets.Count) failed."; return 1 }
+    Write-Host "  Synced $okCount host(s)." -ForegroundColor Green
+    Write-Host ''
+    return 0
+}
+
+function Test-IsAdmin {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $pr = New-Object Security.Principal.WindowsPrincipal($id)
+        return $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+function Get-IsHomeEdition {
+    try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        $caption = [string]$os.Caption
+        if ($caption -match '(?i)home') { return $true }
+        return $false
+    } catch {
+        try {
+            $caption2 = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop).ProductName
+            if ([string]$caption2 -match '(?i)home') { return $true }
+        } catch { }
+        return $false
+    }
+}
+
+function Enable-LocalRdp {
+    if (Get-IsHomeEdition) {
+        Write-Fail 'RDP host is not available on Windows Home. Upgrade to Pro/Enterprise or use SSH only.'
+        return 1
+    }
+    try {
+        Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -ErrorAction Stop
+    } catch {
+        Write-Fail "Failed to enable RDP (registry): $($_.Exception.Message)"
+        return 1
+    }
+    try {
+        Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Fail "Failed to enable firewall rule for Remote Desktop: $($_.Exception.Message)"
+        return 1
+    }
+    try {
+        $svc = Get-Service -Name TermService -ErrorAction Stop
+        if ($svc.Status -ne 'Running') {
+            try { Start-Service -Name TermService -ErrorAction Stop } catch { }
+        }
+    } catch { }
+    Write-Host '  RDP enabled (port 3389, firewall Remote Desktop).' -ForegroundColor Green
+    return 0
+}
+
+function Enable-LocalSsh {
+    $cap = $null
+    try { $cap = Get-WindowsCapability -Online -ErrorAction Stop | Where-Object { $_.Name -like 'OpenSSH.Server*' } | Select-Object -First 1 } catch { }
+    if ($cap) {
+        if ($cap.State -ne 'Installed') {
+            Write-Note 'Installing OpenSSH Server (Add-WindowsCapability)...'
+            try {
+                $null = Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop
+            } catch {
+                Write-Fail "Failed to install OpenSSH Server: $($_.Exception.Message)"
+                return 1
+            }
+        }
+    } else {
+        # Fallback for older systems without Get-WindowsCapability
+        try { $null = Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' -ErrorAction Stop } catch {
+            Write-Fail "OpenSSH Server capability not found: $($_.Exception.Message)"
+            return 1
+        }
+    }
+    try {
+        Set-Service -Name sshd -StartupType Automatic -ErrorAction Stop
+        $svc = Get-Service -Name sshd -ErrorAction Stop
+        if ($svc.Status -ne 'Running') { Start-Service -Name sshd -ErrorAction Stop }
+    } catch {
+        Write-Fail "Failed to start sshd: $($_.Exception.Message)"
+        return 1
+    }
+    try {
+        $rule = Get-NetFirewallRule -Name sshd -ErrorAction SilentlyContinue
+        if (-not $rule) {
+            $null = New-NetFirewallRule -Name sshd -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 -ErrorAction Stop
+        } else {
+            try { Enable-NetFirewallRule -Name sshd -ErrorAction Stop | Out-Null } catch { }
+        }
+    } catch {
+        Write-Fail "Failed to configure firewall for sshd (port 22): $($_.Exception.Message)"
+        return 1
+    }
+    Write-Host '  SSH enabled (port 22, sshd Automatic, firewall sshd).' -ForegroundColor Green
+    return 0
+}
+
+function Invoke-Setup {
+    param([string[]] $SetupArgs)
+
+    if ($SetupArgs.Count -eq 1 -and $SetupArgs[0] -match '^(?i)(help|-h|/\?|--help)$') {
+        Write-Host ''
+        Write-Host '  fcon setup - enable RDP and/or SSH on this machine' -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host '    fcon setup                 interactive: ask for RDP and SSH separately'
+        Write-Host '    fcon setup --rdp           enable RDP only'
+        Write-Host '    fcon setup --ssh           enable SSH only'
+        Write-Host '    fcon setup --rdp --ssh     enable both'
+        Write-Host '    fcon setup --yes           assume yes to asked components (use with --rdp/--ssh)'
+        Write-Host ''
+        Write-Host '  Requires Administrator. Strict mode:'
+        Write-Host '    - without admin -> error, nothing changed'
+        Write-Host '    - RDP on Windows Home -> error (use SSH only)'
+        Write-Host '    - firewall rules are configured automatically'
+        Write-Host '    - reboot is not required (RDP/SSH start immediately)'
+        Write-Host ''
+        return 0
+    }
+
+    if (-not (Test-IsAdmin)) {
+        Write-Fail 'Administrator rights required. Run PowerShell as Administrator and try again.'
+        return 1
+    }
+
+    $wantRdp = $null; $wantSsh = $null
+    $assumeYes = $false
+    $unknown = @()
+    foreach ($a in $SetupArgs) {
+        switch -Regex ($a) {
+            '^(?i)--?rdp$'  { $wantRdp = $true; continue }
+            '^(?i)--?ssh$'  { $wantSsh = $true; continue }
+            '^(?i)--?yes$'  { $assumeYes = $true; continue }
+            '^(?i)--?all$'  { $wantRdp = $true; $wantSsh = $true; continue }
+            default { $unknown += $a }
+        }
+    }
+    if ($unknown.Count -gt 0) {
+        Write-Fail "Unknown option(s): $($unknown -join ' '). Use fcon setup --help"
+        return 1
+    }
+
+    $interactive = Test-Interactive
+    # No flags -> ask separately for each component
+    if ($null -eq $wantRdp -and $null -eq $wantSsh) {
+        if (-not $interactive -and -not $assumeYes) {
+            Write-Fail 'No component selected. Use --rdp and/or --ssh, or run interactively.'
+            return 1
+        }
+        if ($assumeYes) {
+            $wantRdp = $true; $wantSsh = $true
+        } else {
+            $ansRdp = Read-Host '  Enable RDP? [y/N]'
+            $wantRdp = ($ansRdp -match '^(?i)y')
+            $ansSsh = Read-Host '  Enable SSH? [y/N]'
+            $wantSsh = ($ansSsh -match '^(?i)y')
+        }
+    } elseif ($assumeYes) {
+        # --yes without explicit component is handled above; with explicit component just proceed
+    } else {
+        # One flag given interactively -> ask for the other separately
+        if ($null -eq $wantRdp -and $interactive) {
+            $ansRdp = Read-Host '  Enable RDP? [y/N]'
+            $wantRdp = ($ansRdp -match '^(?i)y')
+        } elseif ($null -eq $wantRdp) { $wantRdp = $false }
+        if ($null -eq $wantSsh -and $interactive) {
+            $ansSsh = Read-Host '  Enable SSH? [y/N]'
+            $wantSsh = ($ansSsh -match '^(?i)y')
+        } elseif ($null -eq $wantSsh) { $wantSsh = $false }
+    }
+
+    if (-not $wantRdp -and -not $wantSsh) {
+        Write-Note 'Nothing selected. No changes made.'
+        return 2
+    }
+
+    $code = 0
+    if ($wantRdp) {
+        Write-Host ''
+        Write-Host '  Enabling RDP...' -ForegroundColor Cyan
+        $r = Enable-LocalRdp
+        if ($r -ne 0) { $code = 1 }
+    }
+    if ($wantSsh) {
+        Write-Host ''
+        Write-Host '  Enabling SSH...' -ForegroundColor Cyan
+        $r = Enable-LocalSsh
+        if ($r -ne 0) { $code = 1 }
+    }
+
+    if ($code -eq 0) {
+        Write-Host ''
+        Write-Host '  Setup complete.' -ForegroundColor Green
+        Write-Note 'Verify: Get-Service TermService,sshd | Select Name,Status; netstat -an | findstr "3389.*LISTENING 22.*LISTENING"'
+    } else {
+        Write-Host ''
+        Write-Fail 'Setup finished with errors (see above). Strict mode: fix the error and run again.'
+    }
+    return $code
+}
+
 function Invoke-Help {
     Get-Help -Detailed $PSCommandPath | Out-String | Write-Host
     return 0
@@ -661,7 +1142,25 @@ try {
     switch -Regex ($Name) {
         '^(?i)(help|-h|/\?)$' { exit (Invoke-Help) }
         '^(?i)list$'          { exit (Invoke-List) }
+        '^(?i)add$'           {
+            $addArgs = @()
+            if ($Via) { $addArgs += $Via }
+            if ($Extra) { $addArgs += $Extra }
+            exit (Invoke-Add $addArgs)
+        }
+        '^(?i)sync$'          {
+            $syncArgs = @()
+            if ($Via) { $syncArgs += $Via }
+            if ($Extra) { $syncArgs += $Extra }
+            exit (Invoke-Sync $syncArgs)
+        }
         '^(?i)import$'        { exit (Invoke-Import) }
+        '^(?i)setup$'         {
+            $setupArgs = @()
+            if ($Via) { $setupArgs += $Via }
+            if ($Extra) { $setupArgs += $Extra }
+            exit (Invoke-Setup $setupArgs)
+        }
         '^(?i)edit$'          { exit (Invoke-Edit) }
         '^(?i)path$'          { Write-Host (Get-ListPath); exit 0 }
     }
