@@ -294,6 +294,10 @@ function Format-PcLines($Pcs) {
         }
         $tail = @($pc.Protocol.ToString().ToLowerInvariant().PadRight(3))
         if ($wUser -gt 0) { $tail += $pc.User.PadRight($wUser) }
+        # SSH through an alias ignores User/Host/Port from this row, so the alias
+        # is shown: otherwise 'ssh fcon-xeon' looks like it dials the wrong host.
+        if ($pc.SshAlias) { $tail += ("alias " + $pc.SshAlias) }
+        if ($pc.Port) { $tail += ("port " + $pc.Port) }
         if ($pc.Note) { $tail += $pc.Note }
         $lines.Add(("{0}{1}  {2}  {3}" -f $mark, $pc.Name.PadRight($wName),
                                            $pc.Address.PadRight($wHost), ($tail -join '  ')).TrimEnd())
@@ -733,6 +737,24 @@ function Invoke-Add {
     return 0
 }
 
+# Only this machine's ~/.ssh/config knows its 'Host <alias>' blocks: pushing
+# pcs.csv does not carry them. Answers the alias names found there, empty when
+# there is no config, so callers can warn instead of letting 'ssh <alias>' fail.
+function Get-LocalSshAliases {
+    $config = $null
+    if ($env:USERPROFILE) { $config = Join-Path $env:USERPROFILE '.ssh\config' }
+    if (-not $config -or -not (Test-Path -LiteralPath $config)) { return ,@() }
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in (Get-Content -LiteralPath $config)) {
+        if ($line -match '^\s*Host\s+(.+?)\s*$') {
+            foreach ($h in ($Matches[1] -split '\s+')) {
+                if ($h -and $h -ne '*' -and -not $names.Contains($h)) { $names.Add($h) }
+            }
+        }
+    }
+    return ,$names.ToArray()
+}
+
 function Invoke-Sync {
     param([string[]] $SyncArgs)
 
@@ -803,7 +825,10 @@ function Invoke-Sync {
                 $isSelf = $false
                 if ($selfDns -and ($t.Address -eq $selfDns -or $t.Address -eq "$selfDns.")) { $isSelf = $true }
                 if ($selfAddr -and $t.Address -eq $selfAddr) { $isSelf = $true }
-                if ($t.Name -eq 'RIO' -and $selfName -eq 'RE-7LQD67AHCM0R') { $isSelf = $true }
+                # Same box under the operator's own list name: tailscale host names
+                # compare case-insensitively, and a MagicDNS address starts with its
+                # lower-cased host label, whatever the list calls it.
+                if ($selfName -and ($t.Name -eq $selfName -or $t.Address -like "$selfName.*")) { $isSelf = $true }
                 if ($isSelf) { Write-Note "Skipping self $($t.Name)"; continue }
                 $filtered += $t
             }
@@ -823,7 +848,12 @@ function Invoke-Sync {
     Write-Host ''
 
     $failed = 0; $okCount = 0
+    $localAliases = Get-LocalSshAliases
     foreach ($pc in $targets) {
+        if ($pc.SshAlias -and $localAliases -notcontains $pc.SshAlias) {
+            Write-Host "  !! $($pc.Name): ssh alias '$($pc.SshAlias)' is not in ~/.ssh/config here;" -ForegroundColor Yellow
+            Write-Host "     sync copies only pcs.csv, run setup-client for this alias first." -ForegroundColor Yellow
+        }
         $sshTarget = if ($pc.SshAlias) { $pc.SshAlias } elseif ($pc.User) { "$($pc.User)@$($pc.Address)" } else { $pc.Address }
         $portArgsSsh = @(); $portArgsScp = @()
         if ($pc.Port -and -not $pc.SshAlias) {
