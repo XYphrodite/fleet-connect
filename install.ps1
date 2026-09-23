@@ -17,7 +17,8 @@
     by the Restricted execution policy Windows ships with. With only fcon.cmd answering to
     that name, every run goes through -ExecutionPolicy Bypass.
 
-    Run it again to update; it overwrites the script and leaves your machine list alone.
+    Run it again to update; it skips when already current, keeps a .bak of the
+    previous script, and leaves your machine list alone.
 
     Because `iex` cannot take parameters, overrides come from environment variables:
 
@@ -52,14 +53,53 @@ if ($body -notmatch '(?m)^\s*#Requires -Version') {
     throw "What came back from $source is not the script. Is the repository published and does it have a $ref branch?"
 }
 
-Write-Step "Installing into $target"
-New-Item -ItemType Directory -Force -Path $target | Out-Null
+function Get-FconVersion([string]$Text) {
+    $m = [regex]::Match($Text, '(?m)^\s*\$FLEET_CONNECT_VERSION\s*=\s*''([^'']+)''')
+    if ($m.Success) { return $m.Groups[1].Value } else { return $null }
+}
+function Compare-FconVersion([string]$Local, [string]$Remote) {
+    $l = @($Local -split '\.') | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { 0 } }
+    $r = @($Remote -split '\.') | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { 0 } }
+    $width = [Math]::Max($l.Count, $r.Count)
+    for ($i = 0; $i -lt $width; $i++) {
+        $a = if ($i -lt $l.Count) { $l[$i] } else { 0 }
+        $b = if ($i -lt $r.Count) { $r[$i] } else { 0 }
+        if ($a -ne $b) { if ($a -lt $b) { return -1 } else { return 1 } }
+    }
+    return 0
+}
+
+$remoteVersion = Get-FconVersion $body
+if ([string]::IsNullOrEmpty($remoteVersion)) {
+    throw 'The downloaded file has no version marker. Refusing to install it blind.'
+}
 
 $scriptPath = Join-Path $target 'fleet-connect.ps1'
+$localVersion = '0.0.0'
+if (Test-Path -LiteralPath $scriptPath) {
+    $found = Get-FconVersion ([IO.File]::ReadAllText($scriptPath))
+    if (-not [string]::IsNullOrEmpty($found)) { $localVersion = $found }
+}
+if ((Compare-FconVersion $localVersion $remoteVersion) -ge 0) {
+    Write-Host "fleet-connect $localVersion is already current." -ForegroundColor Green
+    return
+}
+
+Write-Step "Installing into $target ($localVersion -> $remoteVersion)"
+New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+$backupPath = "$scriptPath.bak"
+if (Test-Path -LiteralPath $scriptPath) {
+    Copy-Item -LiteralPath $scriptPath -Destination $backupPath -Force
+}
 # UTF-8 without a BOM, written rather than downloaded to a file: the script is ASCII, a BOM
 # only trips up diffing it later, and a file written this way carries no mark of the web -
 # which is what the RemoteSigned policy blocks an unsigned downloaded script for.
 [IO.File]::WriteAllText($scriptPath, $body, (New-Object Text.UTF8Encoding($false)))
+if ((Get-FconVersion ([IO.File]::ReadAllText($scriptPath))) -ne $remoteVersion) {
+    if (Test-Path -LiteralPath $backupPath) { Copy-Item -LiteralPath $backupPath -Destination $scriptPath -Force }
+    throw 'The written file does not match the download. The previous version was restored.'
+}
 
 # Versions up to this one installed the payload as fcon.ps1, which PowerShell then resolved
 # ahead of the shim. Leaving it behind would keep that path alive after an update.
@@ -98,7 +138,7 @@ if ($fresh) {
 }
 
 Write-Host ''
-Write-Host "fleet-connect installed to $target" -ForegroundColor Green
+Write-Host "fleet-connect $remoteVersion installed to $target" -ForegroundColor Green
 Write-Host ''
 Write-Host 'Next:' -ForegroundColor Cyan
 if ($fresh) {

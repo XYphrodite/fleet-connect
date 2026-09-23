@@ -50,6 +50,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Version marker for fcon update/install: compared against the same line in the
+# remote file. Bump on every functional change; an update whose body lacks this
+# line is refused rather than installed blind.
+$FLEET_CONNECT_VERSION = '1.0.0'
+
 enum PcProtocol {
     Rdp
     Ssh
@@ -1101,6 +1106,24 @@ function Invoke-Setup {
     return $code
 }
 
+function Get-ScriptVersion([string]$Body) {
+    $m = [regex]::Match($Body, '(?m)^\s*\$FLEET_CONNECT_VERSION\s*=\s*''([^'']+)''')
+    if ($m.Success) { return $m.Groups[1].Value } else { return $null }
+}
+
+function Compare-ScriptVersion([string]$Local, [string]$Remote) {
+    # Numeric dotted comparison; a body from before versioning counts as 0.0.0.
+    $l = @($Local -split '\.') | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { 0 } }
+    $r = @($Remote -split '\.') | ForEach-Object { $n = 0; if ([int]::TryParse($_, [ref]$n)) { $n } else { 0 } }
+    $width = [Math]::Max($l.Count, $r.Count)
+    for ($i = 0; $i -lt $width; $i++) {
+        $a = if ($i -lt $l.Count) { $l[$i] } else { 0 }
+        $b = if ($i -lt $r.Count) { $r[$i] } else { 0 }
+        if ($a -ne $b) { if ($a -lt $b) { return -1 } else { return 1 } }
+    }
+    return 0
+}
+
 function Invoke-Update {
     param([string[]] $UpdateArgs)
 
@@ -1108,21 +1131,25 @@ function Invoke-Update {
         Write-Host ''
         Write-Host '  fcon update - update fcon from GitHub' -ForegroundColor Cyan
         Write-Host ''
-        Write-Host '    fcon update                update to latest master'
+        Write-Host '    fcon update                update to a newer version'
         Write-Host '    fcon update --check        only check if update is available'
+        Write-Host '    fcon update --force        reinstall even when up to date'
         Write-Host '    fcon update --help         this text'
         Write-Host ''
         Write-Host '  Mirrors install.ps1: uses $env:FLEET_CONNECT_REPO / _REF / _DIR if set.'
         Write-Host '  Shows progress bar and status text like the panel.'
+        Write-Host '  The previous script is kept as fleet-connect.ps1.bak.'
         Write-Host ''
         return 0
     }
 
     $checkOnly = $false
+    $force = $false
     $unknown = @()
     foreach ($a in $UpdateArgs) {
         switch -Regex ($a) {
             '^(?i)--?check$' { $checkOnly = $true; continue }
+            '^(?i)--?force$' { $force = $true; continue }
             default { $unknown += $a }
         }
     }
@@ -1146,14 +1173,28 @@ function Invoke-Update {
         Write-Host "    $source" -ForegroundColor DarkGray
         Start-Sleep -Milliseconds 150
 
+        $localVersion = Get-Variable -Name FLEET_CONNECT_VERSION -ValueOnly -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrEmpty($localVersion)) { $localVersion = '0.0.0' }
+
         if ($checkOnly) {
             Write-Progress -Activity 'fcon update' -Status 'Checking availability...' -PercentComplete 40
             try {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                $head = Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 15 -Method Head -ErrorAction Stop
+                $checked = Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+                $remoteVersion = Get-ScriptVersion ([string]$checked.Content)
                 Write-Progress -Activity 'fcon update' -Completed
-                Write-Host '  Available: ' -NoNewline -ForegroundColor Green
-                Write-Host $source -ForegroundColor DarkGray
+                if ([string]::IsNullOrEmpty($remoteVersion)) {
+                    Write-Fail "The remote file has no version marker. Run fcon update to reinstall."
+                    return 1
+                }
+                $cmp = Compare-ScriptVersion $localVersion $remoteVersion
+                if ($cmp -lt 0) {
+                    Write-Host '  Update available: ' -NoNewline -ForegroundColor Yellow
+                    Write-Host "$localVersion -> $remoteVersion" -ForegroundColor DarkGray
+                } else {
+                    Write-Host '  Up to date: ' -NoNewline -ForegroundColor Green
+                    Write-Host $localVersion -ForegroundColor DarkGray
+                }
                 Write-Host "  Repository: $repo  ref: $ref" -ForegroundColor DarkGray
                 return 0
             } catch {
@@ -1182,6 +1223,16 @@ function Invoke-Update {
             Write-Progress -Activity 'fcon update' -Completed
             throw "What came back from $source is not the script. Is the repository published and does it have a $ref branch?"
         }
+        $remoteVersion = Get-ScriptVersion $body
+        if ([string]::IsNullOrEmpty($remoteVersion)) {
+            Write-Progress -Activity 'fcon update' -Completed
+            throw 'The downloaded file has no version marker. Refusing to install it blind.'
+        }
+        if (-not $force -and (Compare-ScriptVersion $localVersion $remoteVersion) -ge 0) {
+            Write-Progress -Activity 'fcon update' -Completed
+            Write-Host "  Up to date: $localVersion (use --force to reinstall)" -ForegroundColor Green
+            return 0
+        }
         Start-Sleep -Milliseconds 200
         Write-Host '    file is valid' -ForegroundColor DarkGray
 
@@ -1190,8 +1241,24 @@ function Invoke-Update {
         $null = New-Item -ItemType Directory -Force -Path $target
 
         $scriptPath = Join-Path $target 'fleet-connect.ps1'
-        [IO.File]::WriteAllText($scriptPath, $body, (New-Object Text.UTF8Encoding($false)))
-        Write-Host "    fleet-connect.ps1 updated" -ForegroundColor DarkGray
+        $backupPath = "$scriptPath.bak"
+        if (Test-Path -LiteralPath $scriptPath) {
+            Copy-Item -LiteralPath $scriptPath -Destination $backupPath -Force
+        }
+        try {
+            [IO.File]::WriteAllText($scriptPath, $body, (New-Object Text.UTF8Encoding($false)))
+        } catch {
+            if (Test-Path -LiteralPath $backupPath) { Copy-Item -LiteralPath $backupPath -Destination $scriptPath -Force }
+            Write-Progress -Activity 'fcon update' -Completed
+            throw "Could not write $scriptPath. The previous version was restored. ($($_.Exception.Message))"
+        }
+        $writtenVersion = Get-ScriptVersion ([IO.File]::ReadAllText($scriptPath))
+        if ($writtenVersion -ne $remoteVersion) {
+            if (Test-Path -LiteralPath $backupPath) { Copy-Item -LiteralPath $backupPath -Destination $scriptPath -Force }
+            Write-Progress -Activity 'fcon update' -Completed
+            throw 'The written file does not match the download. The previous version was restored.'
+        }
+        Write-Host "    fleet-connect.ps1 updated ($localVersion -> $remoteVersion)" -ForegroundColor DarkGray
 
         $stale = Join-Path $target 'fcon.ps1'
         if (Test-Path -LiteralPath $stale) { Remove-Item -LiteralPath $stale -Force }
@@ -1222,7 +1289,8 @@ function Invoke-Update {
 
         Write-Host ''
         Write-Host "  fleet-connect updated: $target" -ForegroundColor Green
-        Write-Host "  version: $repo@$ref" -ForegroundColor DarkGray
+        Write-Host "  version: $localVersion -> $remoteVersion ($repo@$ref)" -ForegroundColor DarkGray
+        Write-Host '  previous version kept as fleet-connect.ps1.bak' -ForegroundColor DarkGray
         $listPath = if ($env:FLEET_CONNECT_CSV) { $env:FLEET_CONNECT_CSV } else { Join-Path $env:LOCALAPPDATA 'fleet-connect\pcs.csv' }
         Write-Host "  machine list: $listPath" -ForegroundColor DarkGray
         Write-Host ''

@@ -61,12 +61,15 @@ $env:FLEET_CONNECT_REF = "test-ref"
 $env:FLEET_CONNECT_CSV = Join-Path $tmpTarget "pcs.csv"
 $env:LOCALAPPDATA = $tmpTarget
 
-# Mock Invoke-WebRequest to return fake fleet-connect.ps1 content
+# Mock Invoke-WebRequest to return fake fleet-connect.ps1 content.
+# $script:mockVersion selects the remote version; $script:mockBroken serves garbage.
+$script:mockVersion = '1.0.1'
+$script:mockBroken = $false
 function Invoke-WebRequest { param($Uri,[switch]$UseBasicParsing,$TimeoutSec,$Method)
-  if ($Method -eq 'Head') {
-    return [pscustomobject]@{ StatusCode = 200 }
+  if ($script:mockBroken) {
+    return [pscustomobject]@{ Content = "<html>not the script</html>" }
   }
-  return [pscustomobject]@{ Content = "#Requires -Version 5.1`nWrite-Host 'mocked'" }
+  return [pscustomobject]@{ Content = "#Requires -Version 5.1`n`$FLEET_CONNECT_VERSION = '$script:mockVersion'`nWrite-Host 'mocked'" }
 }
 # Capture Write-Progress calls
 $script:progressCalls = @()
@@ -90,6 +93,46 @@ try {
   $script:progressCalls = @()
   $code2 = Invoke-Update @('--check')
   Assert ($code2 -eq 0) "mocked update --check exits 0 (got $code2)"
+
+  # version comparisons are numeric, not lexical
+  Assert ((Compare-ScriptVersion '1.0.0' '1.0.1') -eq -1) '1.0.0 < 1.0.1'
+  Assert ((Compare-ScriptVersion '1.0.1' '1.0.0') -eq 1) '1.0.1 > 1.0.0'
+  Assert ((Compare-ScriptVersion '1.0.0' '1.0.0') -eq 0) '1.0.0 == 1.0.0'
+  Assert ((Compare-ScriptVersion '1.9.0' '1.10.0') -eq -1) '1.9.0 < 1.10.0 (numeric)'
+  Assert ((Get-ScriptVersion "#Requires -Version 5.1`n`$FLEET_CONNECT_VERSION = '2.3.4'") -eq '2.3.4') 'version marker parses'
+  Assert ($null -eq (Get-ScriptVersion '#Requires -Version 5.1')) 'missing marker parses as null'
+
+  # up to date: same version is not rewritten
+  $script:mockVersion = '1.0.0'
+  Set-Content -LiteralPath $written -Value 'old sentinel' -Encoding ASCII
+  $code3 = Invoke-Update @()
+  Assert ($code3 -eq 0) "up-to-date update exits 0 (got $code3)"
+  Assert ((Get-Content -LiteralPath $written -Raw) -match 'old sentinel') 'up-to-date update leaves the file alone'
+
+  # --force reinstalls the same version
+  $code4 = Invoke-Update @('--force')
+  Assert ($code4 -eq 0) "forced update exits 0 (got $code4)"
+  Assert ((Get-Content -LiteralPath $written -Raw) -match 'mocked') 'forced update rewrites the file'
+  $bak = Join-Path $tmpTarget 'fleet-connect.ps1.bak'
+  Assert (Test-Path -LiteralPath $bak) 'successful update keeps a .bak'
+  Assert ((Get-Content -LiteralPath $bak -Raw) -match 'old sentinel') '.bak holds the previous version'
+
+  # garbage from the server is refused and the install is preserved
+  Set-Content -LiteralPath $written -Value 'precious install' -Encoding ASCII
+  $script:mockBroken = $true
+  $threw = $false
+  try { Invoke-Update @() | Out-Null } catch { $threw = $true }
+  $script:mockBroken = $false
+  Assert $threw 'garbage body throws instead of installing'
+  Assert ((Get-Content -LiteralPath $written -Raw) -match 'precious install') 'refused update preserves the install'
+
+  # --check reports versions both ways
+  $script:mockVersion = '1.2.0'
+  $code5 = Invoke-Update @('--check')
+  Assert ($code5 -eq 0) "newer --check exits 0 (got $code5)"
+  $script:mockVersion = '1.0.0'
+  $code6 = Invoke-Update @('--check')
+  Assert ($code6 -eq 0) "current --check exits 0 (got $code6)"
 } finally {
   Remove-Item -Recurse -Force $tmpTarget -ErrorAction SilentlyContinue
   $env:FLEET_CONNECT_DIR = $oldDir; $env:FLEET_CONNECT_REPO = $oldRepo; $env:FLEET_CONNECT_REF = $oldRef; $env:FLEET_CONNECT_CSV = $oldCsv; $env:LOCALAPPDATA = $oldAppData
