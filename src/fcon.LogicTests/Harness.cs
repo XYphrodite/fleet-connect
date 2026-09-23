@@ -88,8 +88,24 @@ static class LogicTests
         savedHome = Environment.GetEnvironmentVariable("HOME");
         savedProfile = Environment.GetEnvironmentVariable("USERPROFILE");
         Environment.SetEnvironmentVariable("FLEET_CONNECT_CSV", csv);
-        Environment.SetEnvironmentVariable("PATH",
-            fakeBin + Path.PathSeparator + (savedPath ?? ""));
+        // Hermetic PATH: the sandbox double must shadow any real ssh.exe
+        // (stock Windows carries one in System32\OpenSSH, dev boxes add
+        // more). Keep only what the tests need: the fake bin plus the OS
+        // system dirs (cmd.exe, mstsc.exe lookups).
+        string sandboxPath;
+        if (OperatingSystem.IsWindows())
+        {
+            string systemRoot = Environment.GetEnvironmentVariable("SystemRoot");
+            if (string.IsNullOrEmpty(systemRoot))
+                systemRoot = @"C:\Windows";
+            sandboxPath = fakeBin + ";" + Path.Combine(systemRoot, "System32") +
+                          ";" + systemRoot;
+        }
+        else
+        {
+            sandboxPath = fakeBin + ":/usr/bin:/bin";
+        }
+        Environment.SetEnvironmentVariable("PATH", sandboxPath);
         // SSH config resolves under the user profile, which is $HOME on
         // Linux but %USERPROFILE% on Windows: pin both to the sandbox.
         Environment.SetEnvironmentVariable("HOME", root);
