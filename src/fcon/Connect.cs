@@ -56,7 +56,7 @@ static class Connect
         if (pc.User == "")
         {
             Render.Note("mstsc /v:" + target);
-            return Util.RunInherited("mstsc.exe", "/v:" + target) < 0
+            return Util.RunDetached("mstsc.exe", "/v:" + target) < 0
                 ? ExitCodes.Error
                 : ExitCodes.Ok;
         }
@@ -67,7 +67,7 @@ static class Connect
         SetRdpSetting(file, "full address:s:", target);
         SetRdpSetting(file, "username:s:", pc.User);
         Render.Note("mstsc " + file + "   (" + pc.User + " at " + target + ")");
-        return Util.RunInherited("mstsc.exe", "\"" + file + "\"") < 0
+        return Util.RunDetached("mstsc.exe", "\"" + file + "\"") < 0
             ? ExitCodes.Error
             : ExitCodes.Ok;
     }

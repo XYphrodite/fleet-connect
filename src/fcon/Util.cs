@@ -55,8 +55,8 @@ static class Util
         return new Captured { ExitCode = proc.ExitCode, StdOut = stdout, StdErr = stderr };
     }
 
-    // Starts an interactive program inheriting this console (ssh, mstsc,
-    // editors). Returns its exit code; -1 when it could not start.
+    // Starts an interactive console program (ssh) inheriting this console
+    // and waits for it. Returns its exit code; -1 when it could not start.
     public static int RunInherited(string exe, string args)
     {
         try
@@ -67,6 +67,26 @@ static class Util
                 return -1;
             proc.WaitForExit();
             return proc.ExitCode;
+        }
+        catch
+        {
+            return -1;
+        }
+    }
+
+    // Fire-and-forget for GUI programs (mstsc, editors): like Start-Process
+    // in the PS version, the terminal returns at once instead of waiting for
+    // the window to close. Returns 0 when started, -1 when it could not.
+    public static int RunDetached(string exe, string args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo(exe, args) { UseShellExecute = false };
+            var proc = Process.Start(psi);
+            if (proc == null)
+                return -1;
+            proc.Dispose();
+            return 0;
         }
         catch
         {

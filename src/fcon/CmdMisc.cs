@@ -35,7 +35,7 @@ static class CmdMisc
         string editor = Environment.GetEnvironmentVariable("FLEET_CONNECT_EDITOR");
         if (string.IsNullOrWhiteSpace(editor))
             editor = "notepad.exe";
-        return Util.RunInherited(editor, "\"" + path + "\"") < 0
+        return Util.RunDetached(editor, "\"" + path + "\"") < 0
             ? ExitCodes.Error
             : ExitCodes.Ok;
     }
