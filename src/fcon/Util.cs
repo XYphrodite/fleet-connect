@@ -13,8 +13,28 @@ sealed class Captured
 static class Util
 {
     // PATH lookup for an .exe, the C# equivalent of Get-Command -ErrorAction
-    // SilentlyContinue. Returns the full path or null.
+    // SilentlyContinue. Returns the full path or null. The exact name wins
+    // (PS parity); afterwards extensionless companions resolve the way
+    // Windows shells do, so wrappers and test doubles are found too.
     public static string FindExe(string fileName)
+    {
+        string hit = FindExact(fileName);
+        if (hit != null)
+            return hit;
+        if (fileName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            string stem = fileName.Substring(0, fileName.Length - 4);
+            foreach (string ext in new[] { ".bat", ".cmd", ".com" })
+            {
+                hit = FindExact(stem + ext);
+                if (hit != null)
+                    return hit;
+            }
+        }
+        return null;
+    }
+
+    static string FindExact(string fileName)
     {
         if (fileName.IndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }) >= 0)
             return File.Exists(fileName) ? Path.GetFullPath(fileName) : null;

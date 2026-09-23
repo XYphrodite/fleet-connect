@@ -15,6 +15,7 @@ static class LogicTests
     static string savedCsv;
     static string savedPath;
     static string savedHome;
+    static string savedProfile;
 
     static int Main()
     {
@@ -25,6 +26,7 @@ static class LogicTests
             TestCsv();
             TestFormat();
             TestAliases();
+            TestFindExeFallback();
             TestRdpFile();
             TestSafeName();
             TestAdd();
@@ -59,23 +61,39 @@ static class LogicTests
         csv = Path.Combine(root, "pcs.csv");
         fakeBin = Path.Combine(root, "bin");
         Directory.CreateDirectory(fakeBin);
-        // Fake ssh.exe: echoes its argv like the earlier /tmp probe and exits
-        // with FAKESSH_CODE, so dispatch and exit codes are observable.
-        File.WriteAllText(Path.Combine(fakeBin, "ssh.exe"),
-            "#!/bin/sh\necho \"FAKESSH argv: $@\"\nexit ${FAKESSH_CODE:-0}\n");
-        try
+        // Fake ssh: echoes its argv and exits with FAKESSH_CODE, so dispatch
+        // and exit codes are observable. A shell script named ssh.exe runs on
+        // Linux but is dead text on Windows, where the double takes the form
+        // of ssh.bat (found through the PATHEXT fallback in FindExe).
+        if (OperatingSystem.IsWindows())
         {
-            var chmod = System.Diagnostics.Process.Start("chmod", "+x " + Path.Combine(fakeBin, "ssh.exe"));
-            chmod?.WaitForExit();
+            File.WriteAllText(Path.Combine(fakeBin, "ssh.bat"),
+                "@echo off\r\n" +
+                "echo FAKESSH argv: %*\r\n" +
+                "if defined FAKESSH_CODE (exit /b %FAKESSH_CODE%) else (exit /b 0)\r\n");
         }
-        catch { }
+        else
+        {
+            File.WriteAllText(Path.Combine(fakeBin, "ssh.exe"),
+                "#!/bin/sh\necho \"FAKESSH argv: $@\"\nexit ${FAKESSH_CODE:-0}\n");
+            try
+            {
+                var chmod = System.Diagnostics.Process.Start("chmod", "+x " + Path.Combine(fakeBin, "ssh.exe"));
+                chmod?.WaitForExit();
+            }
+            catch { }
+        }
         savedCsv = Environment.GetEnvironmentVariable("FLEET_CONNECT_CSV");
         savedPath = Environment.GetEnvironmentVariable("PATH");
         savedHome = Environment.GetEnvironmentVariable("HOME");
+        savedProfile = Environment.GetEnvironmentVariable("USERPROFILE");
         Environment.SetEnvironmentVariable("FLEET_CONNECT_CSV", csv);
         Environment.SetEnvironmentVariable("PATH",
             fakeBin + Path.PathSeparator + (savedPath ?? ""));
+        // SSH config resolves under the user profile, which is $HOME on
+        // Linux but %USERPROFILE% on Windows: pin both to the sandbox.
         Environment.SetEnvironmentVariable("HOME", root);
+        Environment.SetEnvironmentVariable("USERPROFILE", root);
     }
 
     static void Teardown()
@@ -83,6 +101,7 @@ static class LogicTests
         Environment.SetEnvironmentVariable("FLEET_CONNECT_CSV", savedCsv);
         Environment.SetEnvironmentVariable("PATH", savedPath);
         Environment.SetEnvironmentVariable("HOME", savedHome);
+        Environment.SetEnvironmentVariable("USERPROFILE", savedProfile);
         try { Directory.Delete(root, recursive: true); } catch { }
     }
 
@@ -198,6 +217,13 @@ static class LogicTests
         Check(!found.Contains("*") && found.Count == 3, "skips wildcard, parses exactly three");
         Directory.Delete(sshDir, recursive: true);
         Check(Connect.GetLocalSshAliases().Count == 0, "missing config answers zero aliases");
+    }
+
+    static void TestFindExeFallback()
+    {
+        string found = Util.FindExe("ssh.exe");
+        Check(found != null && found.StartsWith(fakeBin),
+            "ssh resolves to the sandbox double (" + found + ")");
     }
 
     static void TestRdpFile()
