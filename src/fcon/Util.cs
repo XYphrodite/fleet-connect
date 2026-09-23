@@ -61,18 +61,30 @@ static class Util
     // console instead - redirecting their stdio would detach the session.
     public static Captured RunCapture(string exe, string args)
     {
-        var psi = new ProcessStartInfo(exe, args)
-        {
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
+        var psi = BuildPsi(exe, args);
+        psi.UseShellExecute = false;
+        psi.RedirectStandardOutput = true;
+        psi.RedirectStandardError = true;
+        psi.CreateNoWindow = true;
         using var proc = Process.Start(psi);
         string stdout = proc.StandardOutput.ReadToEnd();
         string stderr = proc.StandardError.ReadToEnd();
         proc.WaitForExit();
         return new Captured { ExitCode = proc.ExitCode, StdOut = stdout, StdErr = stderr };
+    }
+
+    // Batch files are not directly executable: shells run them through
+    // cmd.exe, so do the same (Windows only - elsewhere a .bat never runs).
+    static ProcessStartInfo BuildPsi(string exe, string args)
+    {
+        if (OperatingSystem.IsWindows() &&
+            (exe.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) ||
+             exe.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)))
+        {
+            string inner = "\"" + exe + "\"" + (args.Length > 0 ? " " + args : "");
+            return new ProcessStartInfo("cmd.exe", "/c \"" + inner + "\"");
+        }
+        return new ProcessStartInfo(exe, args);
     }
 
     // Starts an interactive console program (ssh) inheriting this console
@@ -81,7 +93,8 @@ static class Util
     {
         try
         {
-            var psi = new ProcessStartInfo(exe, args) { UseShellExecute = false };
+            var psi = BuildPsi(exe, args);
+            psi.UseShellExecute = false;
             using var proc = Process.Start(psi);
             if (proc == null)
                 return -1;
@@ -101,7 +114,8 @@ static class Util
     {
         try
         {
-            var psi = new ProcessStartInfo(exe, args) { UseShellExecute = false };
+            var psi = BuildPsi(exe, args);
+            psi.UseShellExecute = false;
             var proc = Process.Start(psi);
             if (proc == null)
                 return -1;
