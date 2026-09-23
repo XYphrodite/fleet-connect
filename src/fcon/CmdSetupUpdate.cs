@@ -330,14 +330,35 @@ static class CmdSetupUpdate
             target = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Programs", "fleet-connect");
-        // Mirror install.ps1 flavour selection: default self-contained fcon.exe,
-        // framework-dependent when FLEET_CONNECT_FRAMEWORK=1 (needs .NET 10 runtime).
+        // Every downloader must agree: auto-detect .NET 10 unless the env var forces a flavour.
         string fw = Environment.GetEnvironmentVariable("FLEET_CONNECT_FRAMEWORK");
-        bool useFramework = !string.IsNullOrWhiteSpace(fw) && fw != "0" && !fw.Equals("false", StringComparison.OrdinalIgnoreCase);
+        bool useFramework;
+        if (string.IsNullOrWhiteSpace(fw))
+            useFramework = HasDotNet10Runtime();
+        else if (fw.Equals("auto", StringComparison.OrdinalIgnoreCase) || fw.Equals("detect", StringComparison.OrdinalIgnoreCase))
+            useFramework = HasDotNet10Runtime();
+        else if (fw == "0" || fw.Equals("false", StringComparison.OrdinalIgnoreCase) || fw.Equals("no", StringComparison.OrdinalIgnoreCase) || fw.Equals("off", StringComparison.OrdinalIgnoreCase))
+            useFramework = false;
+        else if (fw == "1" || fw.Equals("true", StringComparison.OrdinalIgnoreCase) || fw.Equals("yes", StringComparison.OrdinalIgnoreCase) || fw.Equals("on", StringComparison.OrdinalIgnoreCase))
+            useFramework = true;
+        else
+            useFramework = true; // any other truthy string forces framework
         string exeName = useFramework ? "fcon-framework.exe" : "fcon.exe";
         string source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
             ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
             : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
+        // Auto-detected framework may not be published in older releases (v1.0.1);
+        // probe and fall back to self-contained if the asset is missing.
+        bool isExplicitFramework = !string.IsNullOrWhiteSpace(fw) && !fw.Equals("auto", StringComparison.OrdinalIgnoreCase) && !fw.Equals("detect", StringComparison.OrdinalIgnoreCase);
+        if (useFramework && !isExplicitFramework && !UrlExists(source))
+        {
+            Render.Note("Framework asset not found at " + source + ", falling back to self-contained.");
+            exeName = "fcon.exe";
+            useFramework = false;
+            source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
+                ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
+                : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
+        }
 
         try
         {
@@ -544,5 +565,49 @@ static class CmdSetupUpdate
     static void ProgressDone()
     {
         try { Console.WriteLine(); } catch { }
+    }
+
+    static bool HasDotNet10Runtime()
+    {
+        // Mirrors install.ps1 / setup-client.ps1 Test-DotNet10.
+        try
+        {
+            var r = Util.RunCapture("dotnet", "--list-runtimes");
+            if (r.ExitCode == 0 && (r.StdOut ?? "").Contains("Microsoft.NETCore.App 10."))
+                return true;
+        }
+        catch { }
+        try
+        {
+            string progFiles = Environment.GetEnvironmentVariable("ProgramFiles");
+            if (!string.IsNullOrEmpty(progFiles))
+            {
+                string shared = Path.Combine(progFiles, "dotnet", "shared", "Microsoft.NETCore.App");
+                if (Directory.Exists(shared))
+                {
+                    foreach (string dir in Directory.GetDirectories(shared))
+                    {
+                        if (Path.GetFileName(dir).StartsWith("10.", StringComparison.Ordinal))
+                            return true;
+                    }
+                }
+            }
+        }
+        catch { }
+        // DOTNET_ROOT or LocalAppData\Programs\dotnet fallback
+        foreach (string root in new[] { Environment.GetEnvironmentVariable("DOTNET_ROOT"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "dotnet") })
+        {
+            if (string.IsNullOrEmpty(root)) continue;
+            try
+            {
+                string p = Path.Combine(root, "shared", "Microsoft.NETCore.App");
+                if (Directory.Exists(p))
+                    foreach (string dir in Directory.GetDirectories(p))
+                        if (Path.GetFileName(dir).StartsWith("10.", StringComparison.Ordinal))
+                            return true;
+            }
+            catch { }
+        }
+        return false;
     }
 }

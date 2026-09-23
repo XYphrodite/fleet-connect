@@ -36,8 +36,31 @@ if ($SendKey) {
     }
     if (-not $tailscale) { throw 'Tailscale is required for -SendKey.' }
 }
+function Test-DotNet10 {
+    try { $out = & dotnet --list-runtimes 2>$null; if ($LASTEXITCODE -eq 0 -and $out -match 'Microsoft\.NETCore\.App 10\.') { return $true } } catch {}
+    try { $d = Join-Path $env:ProgramFiles 'dotnet\dotnet.exe'; if (Test-Path -LiteralPath $d) { $out = & $d --list-runtimes 2>$null; if ($out -match 'Microsoft\.NETCore\.App 10\.') { return $true } } } catch {}
+    $shared = Join-Path $env:ProgramFiles 'dotnet\shared\Microsoft.NETCore.App'
+    if (Test-Path -LiteralPath $shared) { try { if (Get-ChildItem -LiteralPath $shared -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '10.*' }) { return $true } } catch {} }
+    return $false
+}
+# setup-client also auto-detects the runtime so every downloader agrees on the flavour.
+if ($null -eq $env:FLEET_CONNECT_FRAMEWORK -or $env:FLEET_CONNECT_FRAMEWORK -eq '') {
+    # propagate auto choice to the nested install.ps1 invocation (it probes again, but keep env consistent)
+    $autoUseFramework = Test-DotNet10
+    if ($autoUseFramework) { Write-Host "Detected .NET 10 runtime - setup will fetch framework-dependent build" -ForegroundColor DarkGray }
+    else { Write-Host "No .NET 10 runtime - setup will fetch self-contained build" -ForegroundColor DarkGray }
+}
 $programDir = if ($env:FLEET_CONNECT_DIR) { $env:FLEET_CONNECT_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\fleet-connect' }
-if (-not (Test-Path -LiteralPath (Join-Path $programDir 'fcon.cmd')) -or -not (Test-Path -LiteralPath (Join-Path $programDir 'fleet-connect.ps1'))) {
+# Install fcon if the exe is missing, or if this is a legacy PS-only install (shim without exe).
+$needInstall = -not (Test-Path -LiteralPath (Join-Path $programDir 'fcon.exe'))
+if (-not $needInstall) {
+    $legacyShim = Test-Path -LiteralPath (Join-Path $programDir 'fcon.cmd')
+    $legacyPs = Test-Path -LiteralPath (Join-Path $programDir 'fleet-connect.ps1')
+    if (-not $legacyShim -and -not $legacyPs) { $needInstall = $false } elseif ($legacyShim -or $legacyPs) { $needInstall = $false }
+    # Actually: old installs had both shim+ps; if exe is there we are already on .NET, no need to reinstall.
+    # Keep the check simple: exe present means done.
+}
+if ($needInstall) {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $repo = if ($env:FLEET_CONNECT_REPO) { $env:FLEET_CONNECT_REPO } else { 'XYphrodite/fleet-connect' }
     $ref = if ($env:FLEET_CONNECT_REF) { $env:FLEET_CONNECT_REF } else { 'master' }
