@@ -22,6 +22,11 @@
         $env:FLEET_CONNECT_REPO = 'owner/name'      # source repository
         $env:FLEET_CONNECT_REF  = 'v1.0.0'          # a release tag instead of latest
         $env:FLEET_CONNECT_DIR  = 'D:\tools\fcon'   # install somewhere else
+        $env:FLEET_CONNECT_FRAMEWORK = '1'          # framework-dependent exe (needs .NET 10 runtime, ~0.2 MiB download)
+
+    Two flavours are published: self-contained fcon.exe (no runtime needed,
+    ~70 MiB) and framework-dependent fcon-framework.exe (needs .NET 10,
+    tiny download). The default is self-contained.
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -32,29 +37,31 @@ $ErrorActionPreference = 'Stop'
 $repo   = if ($env:FLEET_CONNECT_REPO) { $env:FLEET_CONNECT_REPO } else { 'XYphrodite/fleet-connect' }
 $ref    = if ($env:FLEET_CONNECT_REF)  { $env:FLEET_CONNECT_REF }  else { 'latest' }
 $target = if ($env:FLEET_CONNECT_DIR)  { $env:FLEET_CONNECT_DIR }  else { Join-Path $env:LOCALAPPDATA 'Programs\fleet-connect' }
+$useFramework = $env:FLEET_CONNECT_FRAMEWORK -and $env:FLEET_CONNECT_FRAMEWORK -ne '0' -and $env:FLEET_CONNECT_FRAMEWORK.ToLowerInvariant() -ne 'false'
+$exeName = if ($useFramework) { 'fcon-framework.exe' } else { 'fcon.exe' }
 
 function Write-Step([string]$Text) { Write-Host "==> $Text" -ForegroundColor Cyan }
 
 if ($ref -eq 'latest') {
-    $source = "https://github.com/$repo/releases/latest/download/fcon.exe"
+    $source = "https://github.com/$repo/releases/latest/download/$exeName"
 } else {
-    $source = "https://github.com/$repo/releases/download/$ref/fcon.exe"
+    $source = "https://github.com/$repo/releases/download/$ref/$exeName"
 }
 Write-Step "Fetching $source"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('fcon-install-' + [guid]::NewGuid().ToString('N') + '.exe')
 try {
     Invoke-WebRequest -Uri $source -UseBasicParsing -TimeoutSec 120 -OutFile $tmp -ErrorAction Stop
 } catch {
-    throw "Could not download fcon.exe from $repo ($ref). ($($_.Exception.Message))"
+    throw "Could not download $exeName from $repo ($ref). ($($_.Exception.Message))"
 }
 
 # A 404 or an error page downloads as a small HTML/text file rather than failing
-# on some proxies; a real single-file exe starts with MZ and weighs megabytes.
+# on some proxies; a real single-file exe starts with MZ.
 $info = Get-Item -LiteralPath $tmp
 $magic = New-Object byte[] 2
 $stream = [IO.File]::OpenRead($tmp)
 try { $null = $stream.Read($magic, 0, 2) } finally { $stream.Close() }
-if ($info.Length -lt 256KB -or $magic[0] -ne 0x4D -or $magic[1] -ne 0x5A) {
+if ($info.Length -lt 40KB -or $magic[0] -ne 0x4D -or $magic[1] -ne 0x5A) {
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     throw "What came back from $source is not the tool. Is the release published under $repo ($ref)?"
 }

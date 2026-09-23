@@ -330,9 +330,14 @@ static class CmdSetupUpdate
             target = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "Programs", "fleet-connect");
+        // Mirror install.ps1 flavour selection: default self-contained fcon.exe,
+        // framework-dependent when FLEET_CONNECT_FRAMEWORK=1 (needs .NET 10 runtime).
+        string fw = Environment.GetEnvironmentVariable("FLEET_CONNECT_FRAMEWORK");
+        bool useFramework = !string.IsNullOrWhiteSpace(fw) && fw != "0" && !fw.Equals("false", StringComparison.OrdinalIgnoreCase);
+        string exeName = useFramework ? "fcon-framework.exe" : "fcon.exe";
         string source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
-            ? "https://github.com/" + repo + "/releases/latest/download/fcon.exe"
-            : "https://github.com/" + repo + "/releases/download/" + tag + "/fcon.exe";
+            ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
+            : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
 
         try
         {
@@ -357,12 +362,12 @@ static class CmdSetupUpdate
                 return ExitCodes.Error;
             }
 
-            Progress("Downloading fcon.exe...", 25);
-            Render.Paint("==> Downloading fcon.exe...", ConsoleColor.Cyan);
+            Progress("Downloading " + exeName + "...", 25);
+            Render.Paint("==> Downloading " + exeName + "...", ConsoleColor.Cyan);
             Render.Note("    " + source);
             string tmp = Path.Combine(Path.GetTempPath(),
                 "fcon-update-" + Guid.NewGuid().ToString("N") + ".exe");
-            DownloadWithProgress(source, tmp);
+            DownloadWithProgress(source, tmp, exeName);
 
             Progress("Verifying file...", 55);
             Render.Paint("==> Verifying file...", ConsoleColor.Cyan);
@@ -431,7 +436,7 @@ static class CmdSetupUpdate
         }
     }
 
-    static void DownloadWithProgress(string url, string dest)
+    static void DownloadWithProgress(string url, string dest, string exeName = "fcon.exe")
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         using var resp = http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
@@ -455,7 +460,7 @@ static class CmdSetupUpdate
                 if (pct != lastPct)
                 {
                     lastPct = pct;
-                    Progress("Downloading fcon.exe... " + pct + "%", 25 + pct * 30 / 100);
+                    Progress("Downloading " + exeName + "... " + pct + "%", 25 + pct * 30 / 100);
                 }
             }
         }
@@ -466,7 +471,7 @@ static class CmdSetupUpdate
         try
         {
             var info = new FileInfo(path);
-            if (!info.Exists || info.Length < 256 * 1024)
+            if (!info.Exists || info.Length < 40 * 1024)
                 return false;
             var magic = new byte[2];
             using (var fs = File.OpenRead(path))

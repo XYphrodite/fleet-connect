@@ -33,8 +33,13 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/Update.Tests.ps1
           powershell -NoProfile -ExecutionPolicy Bypass -File tests/Sync.Tests.ps1
 
-      - name: Publish single-file exe
+      - name: Publish single-file exe (self-contained)
         run: dotnet publish src/fcon -c Release -r win-x64 --self-contained --nologo
+
+      - name: Publish framework-dependent exe
+        run: |
+          dotnet publish src/fcon -c Release -r win-x64 --self-contained false --nologo -o src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework
+          Copy-Item src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon.exe src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe -Force
 
       - name: CLI tests on the built exe
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/Cli.Tests.ps1
@@ -52,10 +57,17 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Publish single-file exe
+      - name: Publish single-file exe (self-contained)
         run: dotnet publish src/fcon -c Release -r win-x64 --self-contained --nologo
 
-      - name: Attach fcon.exe to the release
+      - name: Publish framework-dependent exe
+        run: |
+          dotnet publish src/fcon -c Release -r win-x64 --self-contained false --nologo -o src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework
+          Copy-Item src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon.exe src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe -Force
+
+      - name: Attach exes to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe
+          files: |
+            src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe
+            src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe

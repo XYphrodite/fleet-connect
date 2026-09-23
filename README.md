@@ -42,9 +42,13 @@ irm https://raw.githubusercontent.com/XYphrodite/fleet-connect/master/install.ps
 # разработка (нужен .NET 10 SDK)
 dotnet build src/fcon
 
-# релизный exe без требования рантайма на клиенте
+# релизный exe без требования рантайма на клиенте (self-contained, ~70 MiB)
 dotnet publish src/fcon -c Release -r win-x64 --self-contained
 # -> src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe
+
+# framework-dependent (нужен .NET 10 runtime, ~0.2 MiB)
+dotnet publish src/fcon -c Release -r win-x64 --self-contained false -o src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework
+# -> publish-framework/fcon.exe  -> переименовать в fcon-framework.exe для релиза
 ```
 
 Проверка без Windows: `tests/Logic.Tests.ps1` (нужен только SDK) гоняет
@@ -53,9 +57,9 @@ dotnet publish src/fcon -c Release -r win-x64 --self-contained
 выводы с кодами 0/1/2. Живые RDP/Setup/Update и интерактивный пикер
 проверяются на Windows через `tests/Cli.Tests.ps1` на собранном exe.
 
-Опубликуйте `fcon.exe` как ассет GitHub-релиза (тег, например `v1.0.0`):
-`install.ps1` и `fcon update` забирают его с
-`.../releases/latest/download/fcon.exe` (`FLEET_CONNECT_REF` выбирает тег).
+Опубликуйте `fcon.exe` (и `fcon-framework.exe` для framework-dependent) как ассеты GitHub-релиза (тег, например `v1.0.0`):
+`install.ps1` и `fcon update` забирают их с
+`.../releases/latest/download/fcon.exe` (или `fcon-framework.exe` при `$env:FLEET_CONNECT_FRAMEWORK=1`, `FLEET_CONNECT_REF` выбирает тег).
 SSH по-прежнему идёт через системный `ssh.exe` с наследованием консоли —
 потоки не перенаправляются, иначе удалённая сессия отвязывается.
 
