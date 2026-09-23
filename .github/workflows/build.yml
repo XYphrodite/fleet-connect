@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build fcon
+        run: dotnet build src/fcon -c Release --nologo
+
+      - name: Logic tests (cross-platform harness)
+        run: dotnet run --project src/fcon.LogicTests -c Release
+
+      - name: PS tests (List, Update, Sync)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/List.Tests.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/Update.Tests.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File tests/Sync.Tests.ps1
+
+      - name: Publish single-file exe
+        run: dotnet publish src/fcon -c Release -r win-x64 --self-contained --nologo
+
+      - name: CLI tests on the built exe
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/Cli.Tests.ps1
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Publish single-file exe
+        run: dotnet publish src/fcon -c Release -r win-x64 --self-contained --nologo
+
+      - name: Attach fcon.exe to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe

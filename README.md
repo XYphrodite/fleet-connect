@@ -32,6 +32,33 @@ irm https://raw.githubusercontent.com/XYphrodite/fleet-connect/master/install.ps
 `Restricted`, с которой Windows приезжает с завода, это запретит. Пока под именем `fcon`
 отзывается только `.cmd`, каждый запуск идёт через `-ExecutionPolicy Bypass`.
 
+## Сборка (.NET 10)
+
+Начиная с этой версии `fcon` — это single-file exe на .NET 10, исходники в
+`src/fcon`. CSV, CLI, меню и коды возврата сохранены 1-в-1 с PowerShell-версией
+(`fleet-connect.ps1` оставлена в репозитории как референс).
+
+```powershell
+# разработка (нужен .NET 10 SDK)
+dotnet build src/fcon
+
+# релизный exe без требования рантайма на клиенте
+dotnet publish src/fcon -c Release -r win-x64 --self-contained
+# -> src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe
+```
+
+Проверка без Windows: `tests/Logic.Tests.ps1` (нужен только SDK) гоняет
+настоящие исходники сквозняком — пикер, `name`, `name ssh/rdp`, `add`,
+`list`, `sync --dry-run`, `import`, роутинг и все алиасы свитчей — и сверяет
+выводы с кодами 0/1/2. Живые RDP/Setup/Update и интерактивный пикер
+проверяются на Windows через `tests/Cli.Tests.ps1` на собранном exe.
+
+Опубликуйте `fcon.exe` как ассет GitHub-релиза (тег, например `v1.0.0`):
+`install.ps1` и `fcon update` забирают его с
+`.../releases/latest/download/fcon.exe` (`FLEET_CONNECT_REF` выбирает тег).
+SSH по-прежнему идёт через системный `ssh.exe` с наследованием консоли —
+потоки не перенаправляются, иначе удалённая сессия отвязывается.
+
 ## Команды
 
 | Команда | Что делает |

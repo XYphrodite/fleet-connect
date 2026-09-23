@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Plain net10 (not -windows): runs on any OS with the .NET 10 SDK. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>FleetConnect</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <StartupObject>FleetConnect.LogicTests</StartupObject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Console cursor APIs are flagged Windows-only by the analyzer;
+         the real build targets net10.0-windows and is unaffected. -->
+    <NoWarn>CA1416</NoWarn>
+    <AssemblyName>fcon-logictests</AssemblyName>
+  </PropertyGroup>
+
+  <!-- Exercise the real sources, except CmdSetupUpdate.cs (registry, Windows
+       identities and dism/sc/netsh have no meaning off Windows). -->
+  <ItemGroup>
+    <Compile Include="../fcon/Models.cs" />
+    <Compile Include="../fcon/Util.cs" />
+    <Compile Include="../fcon/CsvStore.cs" />
+    <Compile Include="../fcon/Tailnet.cs" />
+    <Compile Include="../fcon/Render.cs" />
+    <Compile Include="../fcon/Picker.cs" />
+    <Compile Include="../fcon/Connect.cs" />
+    <Compile Include="../fcon/CmdMisc.cs" />
+    <Compile Include="../fcon/CmdSyncImport.cs" />
+    <Compile Include="../fcon/Program.cs" />
+    <Compile Include="Harness.cs" />
+    <Compile Include="StubSetupUpdate.cs" />
+  </ItemGroup>
+
+</Project>

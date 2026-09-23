@@ -1,0 +1,15 @@
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon.LogicTests.GeneratedMSBuildEditorConfig.editorconfig
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon.LogicTests.AssemblyInfoInputs.cache
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon.LogicTests.AssemblyInfo.cs
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon.LogicTests.csproj.CoreCompileInputs.cache
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon.LogicTests.sourcelink.json
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/bin/Debug/net10.0/fcon-logictests
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/bin/Debug/net10.0/fcon-logictests.deps.json
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/bin/Debug/net10.0/fcon-logictests.runtimeconfig.json
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/bin/Debug/net10.0/fcon-logictests.dll
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/bin/Debug/net10.0/fcon-logictests.pdb
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon-logictests.dll
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/refint/fcon-logictests.dll
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon-logictests.pdb
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/fcon.LogicTests.genruntimeconfig.cache
+/mnt/c/Repos/fleet-connect/src/fcon.LogicTests/obj/Debug/net10.0/ref/fcon-logictests.dll
