@@ -122,7 +122,16 @@ static class Connect
     public static List<string> GetLocalSshAliases()
     {
         var names = new List<string>();
-        string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        // $env:USERPROFILE first, like the PS version: the shell folder API
+        // ignores an overridden variable, and on Linux an unset variable
+        // means "no config" rather than "$HOME/.ssh/config".
+        string profile = Environment.GetEnvironmentVariable("USERPROFILE");
+        if (string.IsNullOrEmpty(profile))
+        {
+            if (OperatingSystem.IsWindows())
+                return names;
+            profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
         if (string.IsNullOrEmpty(profile))
             return names;
         string config = Path.Combine(profile, ".ssh", "config");
