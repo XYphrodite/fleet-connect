@@ -19,6 +19,9 @@ static class Tailnet
     // Set by Program from -NoStatus so AddOnlineStatus can honour it.
     public static bool NoStatus;
 
+    // Test hook for the hermetic logic tests.
+    internal static bool TestNoTailscale;
+
     public static string ResolveTailscale()
     {
         string fromPath = Util.FindExe("tailscale.exe");
@@ -41,6 +44,8 @@ static class Tailnet
 
     public static List<TailnetMachine> GetTailnetMachines()
     {
+        if (TestNoTailscale)
+            return null;
         string exe = ResolveTailscale();
         if (exe == null)
             return null;
@@ -156,6 +161,8 @@ static class Tailnet
     // This machine's own tailnet record, for the sync self-skip.
     public static TailnetMachine GetSelf()
     {
+        if (TestNoTailscale)
+            return null;
         string exe = ResolveTailscale();
         if (exe == null)
             return null;

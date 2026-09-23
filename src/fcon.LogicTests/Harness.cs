@@ -233,6 +233,10 @@ static class LogicTests
         Check(!found.Contains("*") && found.Count == 3, "skips wildcard, parses exactly three");
         Directory.Delete(sshDir, recursive: true);
         Check(Connect.GetLocalSshAliases().Count == 0, "missing config answers zero aliases");
+        string keepProfile = Environment.GetEnvironmentVariable("USERPROFILE");
+        Environment.SetEnvironmentVariable("USERPROFILE", "");
+        Check(Connect.GetLocalSshAliases().Count == 0, "no profile env answers zero (PS parity)");
+        Environment.SetEnvironmentVariable("USERPROFILE", keepProfile);
     }
 
     static void TestFindExeFallback()
@@ -332,10 +336,7 @@ static class LogicTests
 
     static void TestImportNoTailscale()
     {
-        // Hermetic: shrink PATH to the fake bin so a real tailscale (e.g. via
-        // WSL interop) cannot leak into the test on any machine.
-        string keep = Environment.GetEnvironmentVariable("PATH");
-        Environment.SetEnvironmentVariable("PATH", fakeBin);
+        Tailnet.TestNoTailscale = true;
         string output;
         int code;
         try
@@ -344,7 +345,7 @@ static class LogicTests
         }
         finally
         {
-            Environment.SetEnvironmentVariable("PATH", keep);
+            Tailnet.TestNoTailscale = false;
         }
         Check(code == 1 && output.Contains("tailscale"), "import without tailscale exits 1");
     }
