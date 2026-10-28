@@ -15,6 +15,10 @@
     <AssemblyName>fcon-logictests</AssemblyName>
   </PropertyGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Spectre.Console" Version="0.57.2" />
+  </ItemGroup>
+
   <!-- Exercise the real sources, except CmdSetupUpdate.cs (registry, Windows
        identities and dism/sc/netsh have no meaning off Windows). -->
   <ItemGroup>
@@ -28,6 +32,7 @@
     <Compile Include="../fcon/CmdMisc.cs" />
     <Compile Include="../fcon/CmdSyncImport.cs" />
     <Compile Include="../fcon/Program.cs" />
+    <Compile Include="../fcon/Tui/*.cs" />
     <Compile Include="Harness.cs" />
     <Compile Include="StubSetupUpdate.cs" />
   </ItemGroup>

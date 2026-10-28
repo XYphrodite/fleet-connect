@@ -48,49 +48,65 @@ static class Program
                 ? positional.GetRange(2, positional.Count - 2)
                 : new List<string>();
 
-            if (name != null)
+            if (name == null)
             {
-                if (Regex.IsMatch(name, "^(?i)list$"))
-                    return CmdMisc.InvokeList();
-                if (Regex.IsMatch(name, "^(?i)add$"))
-                {
-                    var addArgs = new List<string>();
-                    if (via != null)
-                        addArgs.Add(via);
-                    addArgs.AddRange(extra);
-                    return CmdMisc.InvokeAdd(addArgs);
-                }
-                if (Regex.IsMatch(name, "^(?i)sync$"))
-                {
-                    var syncArgs = new List<string>();
-                    if (via != null)
-                        syncArgs.Add(via);
-                    syncArgs.AddRange(extra);
-                    return CmdSyncImport.InvokeSync(syncArgs);
-                }
-                if (Regex.IsMatch(name, "^(?i)import$"))
-                    return CmdSyncImport.InvokeImport();
-                if (Regex.IsMatch(name, "^(?i)setup$"))
-                {
-                    var setupArgs = new List<string>();
-                    if (via != null)
-                        setupArgs.Add(via);
-                    setupArgs.AddRange(extra);
-                    return CmdSetupUpdate.InvokeSetup(setupArgs);
-                }
-                if (Regex.IsMatch(name, "^(?i)update$"))
-                {
-                    var updArgs = new List<string>();
-                    if (via != null)
-                        updArgs.Add(via);
-                    updArgs.AddRange(extra);
-                    return CmdSetupUpdate.InvokeUpdate(updArgs);
-                }
-                if (Regex.IsMatch(name, "^(?i)edit$"))
-                    return CmdMisc.InvokeEdit();
-                if (Regex.IsMatch(name, "^(?i)path$"))
-                    return CmdMisc.InvokePath();
+                if (Picker.Interactive())
+                    return new Tui.Dashboard().Run();
+                return CmdMisc.InvokeConnect(null, null);
             }
+
+            if (Regex.IsMatch(name, "^(?i)(tui|ui)$") && via == null)
+            {
+                if (!Picker.Interactive())
+                {
+                    Render.Note("No interactive console available for TUI.");
+                    return ExitCodes.NoChoice;
+                }
+                return new Tui.Dashboard().Run();
+            }
+            if (Regex.IsMatch(name, "^(?i)picker$") && via == null)
+                return CmdMisc.InvokeConnect(null, null);
+            if (Regex.IsMatch(name, "^(?i)list$"))
+                return CmdMisc.InvokeList();
+            if (Regex.IsMatch(name, "^(?i)add$"))
+            {
+                var addArgs = new List<string>();
+                if (via != null)
+                    addArgs.Add(via);
+                addArgs.AddRange(extra);
+                return CmdMisc.InvokeAdd(addArgs);
+            }
+            if (Regex.IsMatch(name, "^(?i)sync$"))
+            {
+                var syncArgs = new List<string>();
+                if (via != null)
+                    syncArgs.Add(via);
+                syncArgs.AddRange(extra);
+                return CmdSyncImport.InvokeSync(syncArgs);
+            }
+            if (Regex.IsMatch(name, "^(?i)import$"))
+                return CmdSyncImport.InvokeImport();
+            if (Regex.IsMatch(name, "^(?i)setup$"))
+            {
+                var setupArgs = new List<string>();
+                if (via != null)
+                    setupArgs.Add(via);
+                setupArgs.AddRange(extra);
+                return CmdSetupUpdate.InvokeSetup(setupArgs);
+            }
+            if (Regex.IsMatch(name, "^(?i)update$"))
+            {
+                var updArgs = new List<string>();
+                if (via != null)
+                    updArgs.Add(via);
+                updArgs.AddRange(extra);
+                return CmdSetupUpdate.InvokeUpdate(updArgs);
+            }
+            if (Regex.IsMatch(name, "^(?i)edit$"))
+                return CmdMisc.InvokeEdit();
+            if (Regex.IsMatch(name, "^(?i)path$"))
+                return CmdMisc.InvokePath();
+
             return CmdMisc.InvokeConnect(name, via);
         }
         catch (Exception ex)

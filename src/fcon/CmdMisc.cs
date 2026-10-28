@@ -46,13 +46,14 @@ static class CmdMisc
         return ExitCodes.Ok;
     }
 
-    const string HelpText = @"fleet-connect - pick a machine from a list and open RDP or SSH to it.
+    const string HelpText = @"fleet-connect - full-screen TUI & CLI launcher for RDP and SSH across your fleet.
 
 The machine list is a CSV; one row is one PC. Nothing here stores a password:
 RDP is handed a user name and Windows asks for the rest, SSH goes out through the
 local OpenSSH client and whatever ~/.ssh/config already says about that host.
 
-    fcon                  pick from the list
+    fcon                  open full-screen TUI (or fcon tui)
+    fcon picker           classic inline menu picker
     fcon gpu              connect to the machine named gpu, its own protocol
     fcon gpu ssh          the same machine over SSH instead
     fcon list             print the list and exit
@@ -66,6 +67,14 @@ local OpenSSH client and whatever ~/.ssh/config already says about that host.
     fcon edit             open the CSV in an editor
     fcon path             print where the CSV lives
     fcon help             this text
+
+TUI shortcuts:
+    Enter / R / S         connect default / RDP (stays in TUI) / SSH (returns on exit)
+    /                     live filter by name, host, user, alias, note
+    A / E / C / D         add, edit, clone, delete machine inline
+    [ / ]                 move machine up / down in pcs.csv
+    I / Y / U / F5        import Tailscale, sync CSV, self-update, refresh status
+    F1 / Q / Esc          toggle help / quit
 
 The list lives in %LOCALAPPDATA%\fleet-connect\pcs.csv unless $env:FLEET_CONNECT_CSV
 names another file. Its columns are

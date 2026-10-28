@@ -18,4 +18,14 @@ static class CmdSetupUpdate
         Calls.Add("update:" + string.Join(",", args));
         return 12;
     }
+
+    public static int InvokeUpdateFromTui(Action<string, int> onProgress, Action<string> onLog,
+                                          out string summary)
+    {
+        Calls.Add("update-tui");
+        onProgress?.Invoke("Stub update", 100);
+        summary = "Stub update staged.";
+        onLog?.Invoke(summary);
+        return 0;
+    }
 }

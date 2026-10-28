@@ -14,6 +14,12 @@ sealed class TailnetMachine
     public string HostName = "";
 }
 
+sealed class TailnetSnapshot
+{
+    public TailnetMachine Self;
+    public List<TailnetMachine> Machines;
+}
+
 static class Tailnet
 {
     // Set by Program from -NoStatus so AddOnlineStatus can honour it.
@@ -42,7 +48,7 @@ static class Tailnet
         return null;
     }
 
-    public static List<TailnetMachine> GetTailnetMachines()
+    public static TailnetSnapshot GetSnapshot()
     {
         if (TestNoTailscale)
             return null;
@@ -60,10 +66,17 @@ static class Tailnet
         }
         if (run.ExitCode != 0 || string.IsNullOrWhiteSpace(run.StdOut))
             return null;
+        return ParseStatusJson(run.StdOut);
+    }
+
+    internal static TailnetSnapshot ParseStatusJson(string jsonText)
+    {
+        if (string.IsNullOrWhiteSpace(jsonText))
+            return null;
         JsonDocument json;
         try
         {
-            json = JsonDocument.Parse(run.StdOut);
+            json = JsonDocument.Parse(jsonText);
         }
         catch
         {
@@ -71,70 +84,86 @@ static class Tailnet
         }
         using (json)
         {
-            var nodes = new List<JsonElement>();
             JsonElement root = json.RootElement;
-            if (root.ValueKind == JsonValueKind.Object)
-            {
-                if (root.TryGetProperty("Self", out JsonElement self) &&
-                    self.ValueKind == JsonValueKind.Object)
-                    nodes.Add(self);
-                if (root.TryGetProperty("Peer", out JsonElement peers) &&
-                    peers.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (JsonProperty p in peers.EnumerateObject())
-                    {
-                        if (p.Value.ValueKind == JsonValueKind.Object)
-                            nodes.Add(p.Value);
-                    }
-                }
-            }
-            if (nodes.Count == 0)
+            if (root.ValueKind != JsonValueKind.Object)
                 return null;
-            var result = new List<TailnetMachine>();
-            foreach (JsonElement node in nodes)
+
+            TailnetMachine selfRecord = null;
+            var nodes = new List<JsonElement>();
+            if (root.TryGetProperty("Self", out JsonElement self) &&
+                self.ValueKind == JsonValueKind.Object)
             {
-                string v4 = null;
-                if (node.TryGetProperty("TailscaleIPs", out JsonElement ips) &&
-                    ips.ValueKind == JsonValueKind.Array)
+                nodes.Add(self);
+                string selfV4 = ReadFirstIpv4(self);
+                selfRecord = new TailnetMachine
                 {
-                    foreach (JsonElement ip in ips.EnumerateArray())
-                    {
-                        string s = ip.ValueKind == JsonValueKind.String ? ip.GetString() : null;
-                        if (!string.IsNullOrEmpty(s) && s.IndexOf(':') < 0)
-                        {
-                            v4 = s;
-                            break;
-                        }
-                    }
-                }
-                if (v4 == null)
-                    continue;
-                // The name is read from DNSName and never built from HostName.
-                string dns = (Prop(node, "DNSName") ?? "").TrimEnd('.');
-                string label;
-                if (dns != "")
+                    DnsName = (Prop(self, "DNSName") ?? "").TrimEnd('.'),
+                    Address = selfV4 ?? "",
+                    HostName = Prop(self, "HostName") ?? "",
+                    Online = PropBool(self, "Online"),
+                    Os = Prop(self, "OS") ?? "",
+                };
+                if (selfRecord.DnsName != "")
                 {
-                    int dot = dns.IndexOf('.');
-                    label = dot >= 0 ? dns.Substring(0, dot) : dns;
+                    int dot = selfRecord.DnsName.IndexOf('.');
+                    selfRecord.Name = dot >= 0 ? selfRecord.DnsName.Substring(0, dot) : selfRecord.DnsName;
                 }
                 else
                 {
-                    label = Prop(node, "HostName") ?? "";
+                    selfRecord.Name = selfRecord.HostName;
                 }
-                if (label == "")
-                    continue;
-                result.Add(new TailnetMachine
-                {
-                    Name = label,
-                    DnsName = dns,
-                    Address = v4,
-                    Online = PropBool(node, "Online"),
-                    Os = Prop(node, "OS") ?? "",
-                });
             }
-            if (result.Count == 0)
+
+            if (root.TryGetProperty("Peer", out JsonElement peers) &&
+                peers.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty p in peers.EnumerateObject())
+                {
+                    if (p.Value.ValueKind == JsonValueKind.Object)
+                        nodes.Add(p.Value);
+                }
+            }
+
+            List<TailnetMachine> machines = null;
+            if (nodes.Count > 0)
+            {
+                var result = new List<TailnetMachine>();
+                foreach (JsonElement node in nodes)
+                {
+                    string v4 = ReadFirstIpv4(node);
+                    if (v4 == null)
+                        continue;
+                    // The name is read from DNSName and never built from HostName.
+                    string dns = (Prop(node, "DNSName") ?? "").TrimEnd('.');
+                    string label;
+                    if (dns != "")
+                    {
+                        int dot = dns.IndexOf('.');
+                        label = dot >= 0 ? dns.Substring(0, dot) : dns;
+                    }
+                    else
+                    {
+                        label = Prop(node, "HostName") ?? "";
+                    }
+                    if (label == "")
+                        continue;
+                    result.Add(new TailnetMachine
+                    {
+                        Name = label,
+                        DnsName = dns,
+                        Address = v4,
+                        Online = PropBool(node, "Online"),
+                        Os = Prop(node, "OS") ?? "",
+                        HostName = Prop(node, "HostName") ?? "",
+                    });
+                }
+                if (result.Count > 0)
+                    machines = result;
+            }
+
+            if (selfRecord == null && machines == null)
                 return null;
-            return result;
+            return new TailnetSnapshot { Self = selfRecord, Machines = machines };
         }
     }
 
@@ -158,58 +187,52 @@ static class Tailnet
         return false;
     }
 
-    // This machine's own tailnet record, for the sync self-skip.
-    public static TailnetMachine GetSelf()
+    static string ReadFirstIpv4(JsonElement node)
     {
-        if (TestNoTailscale)
-            return null;
-        string exe = ResolveTailscale();
-        if (exe == null)
-            return null;
-        Captured run;
-        try
+        if (node.TryGetProperty("TailscaleIPs", out JsonElement ips) &&
+            ips.ValueKind == JsonValueKind.Array)
         {
-            run = Util.RunCapture(exe, "status --json");
-        }
-        catch
-        {
-            return null;
-        }
-        if (run.ExitCode != 0 || string.IsNullOrWhiteSpace(run.StdOut))
-            return null;
-        try
-        {
-            using var json = JsonDocument.Parse(run.StdOut);
-            JsonElement root = json.RootElement;
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("Self", out JsonElement self) ||
-                self.ValueKind != JsonValueKind.Object)
-                return null;
-            string v4 = null;
-            if (self.TryGetProperty("TailscaleIPs", out JsonElement ips) &&
-                ips.ValueKind == JsonValueKind.Array)
+            foreach (JsonElement ip in ips.EnumerateArray())
             {
-                foreach (JsonElement ip in ips.EnumerateArray())
-                {
-                    string s = ip.ValueKind == JsonValueKind.String ? ip.GetString() : null;
-                    if (!string.IsNullOrEmpty(s) && s.IndexOf(':') < 0)
-                    {
-                        v4 = s;
-                        break;
-                    }
-                }
+                string s = ip.ValueKind == JsonValueKind.String ? ip.GetString() : null;
+                if (!string.IsNullOrEmpty(s) && s.IndexOf(':') < 0)
+                    return s;
             }
-            return new TailnetMachine
-            {
-                DnsName = ((Prop(self, "DNSName") ?? "").TrimEnd('.')),
-                Address = v4 ?? "",
-                HostName = Prop(self, "HostName") ?? "",
-            };
         }
-        catch
-        {
+        return null;
+    }
+
+    public static List<TailnetMachine> GetTailnetMachines() => GetSnapshot()?.Machines;
+
+    // This machine's own tailnet record, for the sync self-skip.
+    public static TailnetMachine GetSelf() => GetSnapshot()?.Self;
+
+    public static TailnetMachine FindMatch(PcModel pc, IReadOnlyList<TailnetMachine> machines)
+    {
+        if (pc == null || machines == null)
             return null;
+        foreach (var m in machines)
+        {
+            if (m.Name == pc.Name || m.Address == pc.Address || m.DnsName == pc.Address)
+                return m;
         }
+        return null;
+    }
+
+    public static bool IsSelf(PcModel t, TailnetMachine self)
+    {
+        if (t == null || self == null || (self.DnsName == "" && self.Address == ""))
+            return false;
+        if (self.DnsName != "" &&
+            (t.Address == self.DnsName || t.Address == self.DnsName + "."))
+            return true;
+        if (self.Address != "" && t.Address == self.Address)
+            return true;
+        if (self.HostName != "" &&
+            (t.Name.Equals(self.HostName, StringComparison.OrdinalIgnoreCase) ||
+             t.Address.StartsWith(self.HostName + ".", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        return false;
     }
 
     // MagicDNS either resolves on this machine or it does not: asked once for

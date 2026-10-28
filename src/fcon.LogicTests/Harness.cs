@@ -38,6 +38,10 @@ static class LogicTests
             TestUpdateHelp();
             TestSetupBogus();
             TestRouting();
+            TestSshConfigMap();
+            TestTailnetAndImportPlan();
+            TestTuiWindowAndForm();
+            TestTuiDashboardHeadless();
         }
         catch (Exception ex)
         {
@@ -386,8 +390,169 @@ static class LogicTests
         Check(Program.Run(new[] { "setup", "--bogus" }) == 11, "route: setup bogus");
         Check(Program.Run(new[] { "nope" }) == 2, "route: unknown name exits 2");
         if (!Picker.Interactive())
+        {
             Check(Program.Run(Array.Empty<string>()) == 2, "route: bare picker headless exits 2");
+            Check(Program.Run(new[] { "tui" }) == 2, "route: tui headless exits 2");
+        }
         else
             Console.WriteLine("SKIP: bare picker needs no console (one is attached)");
+    }
+
+    static void TestSshConfigMap()
+    {
+        string sshDir = Path.Combine(root, ".ssh");
+        Directory.CreateDirectory(sshDir);
+        File.WriteAllText(Path.Combine(sshDir, "config"),
+            "# sample config\n" +
+            "Host fcon-xeon\n    HostName example.ts.net\n    User local\n    Port 2202\n\n" +
+            "Host wsl box2\n    HostName=100.74.101.71\n    User ubuntu\n\n" +
+            "Host *\n    ServerAliveInterval 60\n");
+        var map = Connect.GetLocalSshConfigMap();
+        Check(map.TryGetValue("fcon-xeon", out var xeon) &&
+              xeon.HostName == "example.ts.net" && xeon.User == "local" && xeon.Port == "2202",
+            "ssh config map parses HostName/User/Port");
+        Check(map.TryGetValue("box2", out var b2) && b2.HostName == "100.74.101.71" && b2.User == "ubuntu",
+            "ssh config map parses multi-alias and Key=Value");
+        Check(!map.ContainsKey("*"), "ssh config map skips wildcard");
+        Directory.Delete(sshDir, recursive: true);
+    }
+
+    static void TestTailnetAndImportPlan()
+    {
+        string sampleJson =
+            "{\"Self\":{\"HostName\":\"DESK\",\"DNSName\":\"desk.tail01.ts.net.\",\"OS\":\"windows\",\"Online\":true,\"TailscaleIPs\":[\"100.64.0.1\",\"fd7a::1\"]}," +
+            "\"Peer\":{\"p1\":{\"HostName\":\"rig\",\"DNSName\":\"rig-01.tail01.ts.net.\",\"OS\":\"linux\",\"Online\":true,\"TailscaleIPs\":[\"100.64.0.2\"]}," +
+            "\"p2\":{\"HostName\":\"phone\",\"DNSName\":\"iphone.tail01.ts.net.\",\"OS\":\"iOS\",\"Online\":true,\"TailscaleIPs\":[\"100.64.0.3\"]}}}";
+        var snap = Tailnet.ParseStatusJson(sampleJson);
+        Check(snap != null && snap.Self != null && snap.Self.Name == "desk", "tailnet snapshot parses Self");
+        Check(snap.Machines != null && snap.Machines.Count == 3, "tailnet snapshot parses Self + Peers");
+
+        var existing = new List<PcModel>
+        {
+            new PcModel { Name = "desk", Address = "100.64.0.99", Protocol = PcProtocol.Rdp },
+        };
+        bool ok = CmdSyncImport.BuildImportPlan(snap.Machines, existing, forceUseNames: false,
+            out ImportPlan plan, out string err);
+        Check(ok && string.IsNullOrEmpty(err), "import plan builds cleanly");
+        Check(plan.Skipped.Count == 1 && plan.Skipped[0].Name == "iphone", "import plan skips iOS");
+        Check(plan.Added.Count == 1 && plan.Merged.Any(m => m.Name == "rig-01" && m.Protocol == PcProtocol.Ssh),
+            "import plan adds linux peer as ssh");
+        Check(plan.Changed.Count == 1 && plan.Merged.First(m => m.Name == "desk").Address == "100.64.0.1",
+            "import plan updates changed address");
+    }
+
+    static void TestTuiWindowAndForm()
+    {
+        var wAll = Tui.ListWindow.Around(2, 5, 10);
+        Check(wAll.First == 0 && wAll.Last == 4, "list window shows all when capacity >= count");
+        var wMid = Tui.ListWindow.Around(10, 25, 8);
+        Check(wMid.First <= 10 && wMid.Last >= 10 && (wMid.Last - wMid.First + 1) <= 6,
+            "list window keeps middle selection visible with indicator headroom");
+
+        var existing = new List<PcModel>
+        {
+            new PcModel { Name = "xeon", Address = "10.0.0.1", Protocol = PcProtocol.Rdp },
+        };
+        var form = new Tui.PcForm(Tui.PcFormMode.Add, null, new[] { "fcon-xeon" });
+        // Ctrl+S on empty form must fail validation with Name required.
+        var ctrlS = new ConsoleKeyInfo('\x13', ConsoleKey.S, false, false, true);
+        Check(form.HandleKey(ctrlS, existing, out _) == Tui.PcFormAction.None &&
+              form.Error.Contains("Name"), "form rejects empty name");
+
+        form.Name = "xeon";
+        form.Address = "10.0.0.2";
+        Check(!form.Validate(existing, out _, out string dupErr) && dupErr.Contains("already exists"),
+            "form rejects duplicate name");
+
+        form.Name = "gpu2";
+        form.Port = "99999";
+        Check(!form.Validate(existing, out _, out string portErr) && portErr.Contains("Port"),
+            "form rejects out-of-range port");
+
+        form.Port = "2222";
+        form.Protocol = PcProtocol.Ssh;
+        Check(form.Validate(existing, out PcModel built, out _) &&
+              built.Name == "gpu2" && built.Protocol == PcProtocol.Ssh && built.Port == "2222",
+            "form builds valid PcModel");
+    }
+
+    static void TestTuiDashboardHeadless()
+    {
+        File.WriteAllText(csv,
+            "Name,Host,Protocol,User,SshAlias,Port,Note\n" +
+            "xeon,desktop.ts.net,Rdp,local,fcon-xeon,,\"[prod] main rig\"\n" +
+            "nuc,100.100.10.14,Ssh,root,,2222,garage\n");
+
+        bool prevNoStatus = Tailnet.NoStatus;
+        Tailnet.NoStatus = true;
+        try
+        {
+            var sw = new StringWriter();
+            var console = Spectre.Console.AnsiConsole.Create(new Spectre.Console.AnsiConsoleSettings
+            {
+                Ansi = Spectre.Console.AnsiSupport.No,
+                ColorSystem = Spectre.Console.ColorSystemSupport.NoColors,
+                Out = new Spectre.Console.AnsiConsoleOutput(sw),
+            });
+            console.Profile.Width = 110;
+            console.Profile.Height = 28;
+
+            var dash = new Tui.Dashboard(console);
+            dash.ReloadLocalState(initial: true);
+
+            // Render layout including square brackets in Note to verify Markup.Escape safety.
+            console.Write(dash.BuildLayout());
+            string rendered = sw.ToString();
+            Check(rendered.Contains("fleet-connect") && rendered.Contains("xeon") && rendered.Contains("[prod] main rig"),
+                "dashboard renders machines, header and escaped bracket notes");
+
+            // Navigate down to 'nuc' and press S -> should request suspended SSH session!
+            dash.HandleKey(new ConsoleKeyInfo('\0', ConsoleKey.DownArrow, false, false, false), out _);
+            Check(dash.CurrentSelected()?.Name == "nuc", "dashboard DownArrow selects nuc");
+
+            bool suspendForSsh = dash.HandleKey(new ConsoleKeyInfo('s', ConsoleKey.S, false, false, false),
+                out Tui.PendingSshSession sshReq);
+            Check(suspendForSsh && sshReq != null && sshReq.Summary == "ssh root@100.100.10.14 -p 2222",
+                "dashboard S prepares SSH session and suspends Live loop");
+
+            // Live filter '/' -> 'x' -> selects xeon; Esc clears filter.
+            dash.HandleKey(new ConsoleKeyInfo('/', ConsoleKey.Oem2, false, false, false), out _);
+            dash.HandleKey(new ConsoleKeyInfo('x', ConsoleKey.X, false, false, false), out _);
+            Check(dash.FilteredPcs().Count == 1 && dash.CurrentSelected()?.Name == "xeon",
+                "dashboard live filter narrows list");
+            dash.HandleKey(new ConsoleKeyInfo('\x1b', ConsoleKey.Escape, false, false, false), out _);
+            Check(dash.FilteredPcs().Count == 2, "dashboard Esc clears filter");
+
+            // Reorder 'xeon' down with ']' and verify persisted order in pcs.csv.
+            dash.HandleKey(new ConsoleKeyInfo(']', ConsoleKey.Oem6, false, false, false), out _);
+            var reloaded = CsvStore.ReadPcList();
+            Check(reloaded.Count == 2 && reloaded[0].Name == "nuc" && reloaded[1].Name == "xeon",
+                "dashboard ']' reorders rows and saves pcs.csv");
+
+            // Render help view (F1) and inline Add form (A) through Spectre's markup parser too.
+            dash.HandleKey(new ConsoleKeyInfo('\0', ConsoleKey.F1, false, false, false), out _);
+            console.Write(dash.BuildLayout());
+            dash.HandleKey(new ConsoleKeyInfo('\0', ConsoleKey.F1, false, false, false), out _);
+
+            dash.HandleKey(new ConsoleKeyInfo('a', ConsoleKey.A, false, false, false), out _);
+            console.Write(dash.BuildLayout());
+            dash.HandleKey(new ConsoleKeyInfo('\x1b', ConsoleKey.Escape, false, false, false), out _);
+            dash.HandleKey(new ConsoleKeyInfo('\x1b', ConsoleKey.Escape, false, false, false), out _);
+
+            // Delete selected ('xeon') with 'd' (renders confirm footer) then 'y'.
+            dash.HandleKey(new ConsoleKeyInfo('d', ConsoleKey.D, false, false, false), out _);
+            console.Write(dash.BuildLayout());
+            dash.HandleKey(new ConsoleKeyInfo('y', ConsoleKey.Y, false, false, false), out _);
+            Check(CsvStore.ReadPcList().Count == 1 && CsvStore.ReadPcList()[0].Name == "nuc",
+                "dashboard delete confirmation removes machine and persists CSV");
+
+            // Quit with 'q'.
+            bool quit = dash.HandleKey(new ConsoleKeyInfo('q', ConsoleKey.Q, false, false, false), out var noSsh);
+            Check(quit && noSsh == null, "dashboard Q exits cleanly");
+        }
+        finally
+        {
+            Tailnet.NoStatus = prevNoStatus;
+        }
     }
 }

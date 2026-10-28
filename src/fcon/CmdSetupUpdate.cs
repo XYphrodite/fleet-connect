@@ -457,7 +457,99 @@ static class CmdSetupUpdate
         }
     }
 
-    static void DownloadWithProgress(string url, string dest, string exeName = "fcon.exe")
+    public static int InvokeUpdateFromTui(Action<string, int> onProgress, Action<string> onLog,
+                                          out string summary)
+    {
+        summary = "";
+        string repo = Environment.GetEnvironmentVariable("FLEET_CONNECT_REPO");
+        if (string.IsNullOrWhiteSpace(repo))
+            repo = "XYphrodite/fleet-connect";
+        string tag = Environment.GetEnvironmentVariable("FLEET_CONNECT_REF");
+        if (string.IsNullOrWhiteSpace(tag))
+            tag = "latest";
+        string target = Environment.GetEnvironmentVariable("FLEET_CONNECT_DIR");
+        if (string.IsNullOrWhiteSpace(target))
+            target = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Programs", "fleet-connect");
+
+        string fw = Environment.GetEnvironmentVariable("FLEET_CONNECT_FRAMEWORK");
+        bool useFramework;
+        if (string.IsNullOrWhiteSpace(fw))
+            useFramework = HasDotNet10Runtime();
+        else if (fw.Equals("auto", StringComparison.OrdinalIgnoreCase) || fw.Equals("detect", StringComparison.OrdinalIgnoreCase))
+            useFramework = HasDotNet10Runtime();
+        else if (fw == "0" || fw.Equals("false", StringComparison.OrdinalIgnoreCase) || fw.Equals("no", StringComparison.OrdinalIgnoreCase) || fw.Equals("off", StringComparison.OrdinalIgnoreCase))
+            useFramework = false;
+        else
+            useFramework = true;
+
+        string exeName = useFramework ? "fcon-framework.exe" : "fcon.exe";
+        string source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
+            ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
+            : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
+
+        bool isExplicitFramework = !string.IsNullOrWhiteSpace(fw) &&
+            !fw.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
+            !fw.Equals("detect", StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            onProgress?.Invoke("Checking " + repo + "@" + tag + "...", 5);
+            if (useFramework && !isExplicitFramework && !UrlExists(source))
+            {
+                onLog?.Invoke("Framework asset not found, falling back to self-contained fcon.exe");
+                exeName = "fcon.exe";
+                source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
+                    ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
+                    : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
+            }
+
+            onLog?.Invoke("Downloading " + source);
+            onProgress?.Invoke("Downloading " + exeName + "...", 25);
+            string tmp = Path.Combine(Path.GetTempPath(),
+                "fcon-update-" + Guid.NewGuid().ToString("N") + ".exe");
+            DownloadWithProgress(source, tmp, exeName, onProgress);
+
+            onProgress?.Invoke("Verifying executable...", 60);
+            if (!LooksLikeExe(tmp))
+                throw new Exception("Downloaded asset from " + source + " is not a valid Windows executable.");
+
+            onProgress?.Invoke("Staging update...", 85);
+            Directory.CreateDirectory(target);
+            string exePath = Path.Combine(target, "fcon.exe");
+            if (File.Exists(exePath))
+                File.Copy(exePath, exePath + ".bak", overwrite: true);
+            string staged = Path.Combine(target, "fcon.new.exe");
+            File.Copy(tmp, staged, overwrite: true);
+            try { File.Delete(tmp); } catch { }
+            foreach (string stale in new[] { "fcon.cmd", "fleet-connect.ps1", "fcon.ps1" })
+            {
+                try
+                {
+                    string p = Path.Combine(target, stale);
+                    if (File.Exists(p))
+                        File.Delete(p);
+                }
+                catch { }
+            }
+            SpawnSwap(staged, exePath);
+            EnsureTargetOnPath(target, quiet: true);
+            onProgress?.Invoke("Update staged", 100);
+            summary = "Update staged (" + repo + "@" + tag + "). Close fcon to swap in the new binary.";
+            onLog?.Invoke(summary);
+            return ExitCodes.Ok;
+        }
+        catch (Exception ex)
+        {
+            summary = "Update failed: " + ex.Message;
+            onLog?.Invoke(summary);
+            return ExitCodes.Error;
+        }
+    }
+
+    static void DownloadWithProgress(string url, string dest, string exeName = "fcon.exe",
+                                     Action<string, int> onProgress = null)
     {
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
         using var resp = http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
@@ -481,7 +573,12 @@ static class CmdSetupUpdate
                 if (pct != lastPct)
                 {
                     lastPct = pct;
-                    Progress("Downloading " + exeName + "... " + pct + "%", 25 + pct * 30 / 100);
+                    string label = "Downloading " + exeName + "... " + pct + "%";
+                    int barPct = 25 + pct * 30 / 100;
+                    if (onProgress != null)
+                        onProgress(label, barPct);
+                    else
+                        Progress(label, barPct);
                 }
             }
         }
@@ -526,7 +623,7 @@ static class CmdSetupUpdate
         }
     }
 
-    static void EnsureTargetOnPath(string target)
+    static void EnsureTargetOnPath(string target, bool quiet = false)
     {
         try
         {
@@ -535,7 +632,8 @@ static class CmdSetupUpdate
                 .Equals(target.TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase));
             if (!has)
             {
-                Render.Paint("==> Adding to PATH...", ConsoleColor.Cyan);
+                if (!quiet)
+                    Render.Paint("==> Adding to PATH...", ConsoleColor.Cyan);
                 string updated = string.IsNullOrEmpty(userPath) ? target : userPath + ";" + target;
                 Environment.SetEnvironmentVariable("Path", updated, EnvironmentVariableTarget.User);
             }

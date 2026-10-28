@@ -5,6 +5,15 @@ using System.Text.RegularExpressions;
 
 namespace FleetConnect;
 
+sealed class ImportPlan
+{
+    public bool UseNames;
+    public List<PcModel> Merged = new List<PcModel>();
+    public List<TailnetMachine> Skipped = new List<TailnetMachine>();
+    public List<string> Added = new List<string>();
+    public List<string> Changed = new List<string>();
+}
+
 static class CmdSyncImport
 {
     // ------------------------------------------------------------------ sync
@@ -257,30 +266,123 @@ static class CmdSyncImport
         return proc.ExitCode == 0;
     }
 
-    // ---------------------------------------------------------------- import
-
-    public static int InvokeImport()
+    public static List<PcModel> FilterSelfFromTargets(List<PcModel> targets, TailnetMachine self,
+                                                      Action<string> onSkipped = null)
     {
-        var machines = Tailnet.GetTailnetMachines();
-        if (machines == null)
+        if (self == null || (self.DnsName == "" && self.Address == ""))
+            return targets;
+        var filtered = new List<PcModel>();
+        foreach (var t in targets)
         {
-            Render.Fail("Could not read \"tailscale status --json\". Is Tailscale installed and up?");
-            return ExitCodes.Error;
+            if (Tailnet.IsSelf(t, self))
+            {
+                onSkipped?.Invoke(t.Name);
+                continue;
+            }
+            filtered.Add(t);
+        }
+        return filtered;
+    }
+
+    public static bool PushCsvToTarget(PcModel pc, string localPath, string ssh, string scp,
+                                       IReadOnlyCollection<string> localAliases,
+                                       out string sshTarget, out string aliasWarning,
+                                       out bool verified)
+    {
+        verified = false;
+        aliasWarning = null;
+        if (pc.SshAlias != "" && localAliases != null && !localAliases.Contains(pc.SshAlias))
+            aliasWarning = pc.Name + ": ssh alias '" + pc.SshAlias + "' is not in ~/.ssh/config here";
+
+        sshTarget = pc.SshAlias != "" ? pc.SshAlias
+            : pc.User != "" ? pc.User + "@" + pc.Address : pc.Address;
+        string portSsh = (pc.Port != "" && pc.SshAlias == "") ? "-p " + pc.Port + " " : "";
+        string portScp = (pc.Port != "" && pc.SshAlias == "") ? "-P " + pc.Port + " " : "";
+
+        // 1) ensure remote dir exists.
+        try
+        {
+            Util.RunCapture(ssh, portSsh + Quote(sshTarget) + " " +
+                Quote("mkdir \"%LOCALAPPDATA%\\fleet-connect\" 2>nul & echo ok"));
+        }
+        catch { }
+
+        bool pushed = false;
+
+        // 2) push via 'more' pipe - works on all Windows OpenSSH hosts,
+        //    even when sftp is disabled.
+        try
+        {
+            if (PipeFileToSsh(ssh, portSsh + Quote(sshTarget) + " " +
+                    Quote("more > \"%LOCALAPPDATA%\\fleet-connect\\pcs.csv\""), localPath))
+                pushed = true;
+        }
+        catch { }
+
+        // 3) fallback to scp if the pipe failed and scp is available.
+        if (!pushed && scp != null)
+        {
+            string remoteUser = pc.User != "" ? pc.User : "local";
+            string dest = sshTarget + ":C:/Users/" + remoteUser + "/AppData/Local/fleet-connect/pcs.csv";
+            try
+            {
+                var scpRun = Util.RunCapture(scp, "-o StrictHostKeyChecking=accept-new " +
+                    portScp + Quote(localPath) + " " + dest);
+                if (scpRun.ExitCode == 0)
+                    pushed = true;
+            }
+            catch { }
+        }
+
+        if (!pushed)
+            return false;
+
+        try
+        {
+            var head = Util.RunCapture(ssh, portSsh + Quote(sshTarget) + " " +
+                Quote("type \"%LOCALAPPDATA%\\fleet-connect\\pcs.csv\""));
+            string first = (head.StdOut ?? "").Split('\n')[0];
+            if (Regex.IsMatch(first, "Name.*Host"))
+                verified = true;
+        }
+        catch { }
+        return true;
+    }
+
+    public static bool BuildImportPlan(List<TailnetMachine> rawMachines, List<PcModel> existing,
+                                       bool? forceUseNames, out ImportPlan plan, out string error)
+    {
+        plan = null;
+        error = null;
+        if (rawMachines == null)
+        {
+            error = "Could not read \"tailscale status --json\". Is Tailscale installed and up?";
+            return false;
         }
 
         // Phones and tablets are in the tailnet too, and neither answers RDP or SSH.
         var mobile = new Regex("^(?i)(ios|android|tvos)$");
-        var skipped = machines.Where(m => mobile.IsMatch(m.Os)).ToList();
-        machines = machines.Where(m => !mobile.IsMatch(m.Os)).ToList();
+        var skipped = rawMachines.Where(m => mobile.IsMatch(m.Os)).ToList();
+        var machines = rawMachines.Where(m => !mobile.IsMatch(m.Os)).ToList();
         if (machines.Count == 0)
         {
-            Render.Fail("The tailnet has no machine this tool could connect to.");
-            return ExitCodes.Error;
+            error = "The tailnet has no machine this tool could connect to.";
+            return false;
         }
 
-        bool useNames = Tailnet.TestMagicDnsWorks(machines[0].DnsName);
+        bool useNames = forceUseNames ?? Tailnet.TestMagicDnsWorks(machines[0].DnsName);
+        var merged = existing.Select(p => new PcModel
+        {
+            Name = p.Name,
+            Address = p.Address,
+            Protocol = p.Protocol,
+            User = p.User,
+            SshAlias = p.SshAlias,
+            Port = p.Port,
+            Note = p.Note,
+            Online = p.Online,
+        }).ToList();
 
-        var existing = CsvStore.ReadPcList();
         var added = new List<string>();
         var changed = new List<string>();
 
@@ -291,7 +393,7 @@ static class CmdSyncImport
             // Matched on the name and on either form of the address, so a
             // machine already in the list under an operator's own name is
             // updated rather than added twice.
-            var match = existing.FirstOrDefault(p =>
+            var match = merged.FirstOrDefault(p =>
                 p.Name == m.Name || p.Address == m.Address || p.Address == m.DnsName);
 
             if (match != null)
@@ -312,21 +414,44 @@ static class CmdSyncImport
                 // far more often than the other way round.
                 Protocol = Regex.IsMatch(m.Os, "^(?i)linux") ? PcProtocol.Ssh : PcProtocol.Rdp,
             };
-            existing.Add(pc);
+            merged.Add(pc);
             added.Add("+ " + pc.Name + "  " + pc.Address + "  " + Protocols.ToName(pc.Protocol));
         }
 
+        plan = new ImportPlan
+        {
+            UseNames = useNames,
+            Merged = merged,
+            Skipped = skipped,
+            Added = added,
+            Changed = changed,
+        };
+        return true;
+    }
+
+    // ---------------------------------------------------------------- import
+
+    public static int InvokeImport()
+    {
+        var machines = Tailnet.GetTailnetMachines();
+        var existing = CsvStore.ReadPcList();
+        if (!BuildImportPlan(machines, existing, null, out ImportPlan plan, out string error))
+        {
+            Render.Fail(error);
+            return ExitCodes.Error;
+        }
+
         Console.WriteLine();
-        if (!useNames)
+        if (!plan.UseNames)
             Render.Note("MagicDNS does not resolve here, so 100.x addresses are stored instead of names.");
-        foreach (var s in skipped)
+        foreach (var s in plan.Skipped)
             Render.Note("- " + s.Name + " (" + s.Os + "), skipped");
-        foreach (string line in added)
+        foreach (string line in plan.Added)
             Render.Paint("  " + line, ConsoleColor.Green);
-        foreach (string line in changed)
+        foreach (string line in plan.Changed)
             Render.Paint("  " + line, ConsoleColor.Yellow);
 
-        if (added.Count == 0 && changed.Count == 0)
+        if (plan.Added.Count == 0 && plan.Changed.Count == 0)
         {
             Render.Note("Nothing to change.");
             Console.WriteLine();
@@ -349,7 +474,7 @@ static class CmdSyncImport
                 return ExitCodes.NoChoice;
             }
         }
-        CsvStore.WritePcList(existing);
+        CsvStore.WritePcList(plan.Merged);
         Render.Note("Written. The previous list is kept as " + CsvStore.GetListPath() + ".bak");
         Console.WriteLine();
         return ExitCodes.Ok;

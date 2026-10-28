@@ -21,7 +21,7 @@ static class CsvStore
 
     public static string GetListDirectory() => Path.GetDirectoryName(GetListPath());
 
-    public static List<PcModel> ReadPcList()
+    public static List<PcModel> ReadPcList(Action<string> onWarning = null)
     {
         var list = new List<PcModel>();
         string path = GetListPath();
@@ -50,7 +50,11 @@ static class CsvStore
             catch (Exception ex)
             {
                 // A typo in one row must not hide the other machines.
-                Render.Note(pc.Name + ": " + ex.Message + " Falling back to rdp.");
+                string warning = pc.Name + ": " + ex.Message + " Falling back to rdp.";
+                if (onWarning != null)
+                    onWarning(warning);
+                else
+                    Render.Note(warning);
                 pc.Protocol = PcProtocol.Rdp;
             }
             list.Add(pc);
