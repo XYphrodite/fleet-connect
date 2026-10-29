@@ -14,8 +14,20 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: fleet-connect
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: fleet-connect
+
+      - uses: actions/checkout@v4
+        with:
+          repository: XYphrodite/self-update-kit
+          ref: 4a78bc9df66f26d7bdc3c0572e95131c2d1c3440
+          path: self-update-kit
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -50,8 +62,20 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: fleet-connect
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: fleet-connect
+
+      - uses: actions/checkout@v4
+        with:
+          repository: XYphrodite/self-update-kit
+          ref: 4a78bc9df66f26d7bdc3c0572e95131c2d1c3440
+          path: self-update-kit
 
       - uses: actions/setup-dotnet@v4
         with:
@@ -65,9 +89,20 @@ jobs:
           dotnet publish src/fcon -c Release -r win-x64 --self-contained false --nologo -o src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework
           Copy-Item src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon.exe src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe -Force
 
-      - name: Attach exes to the release
+      - name: Generate SHA-256 sidecars for SelfUpdateKit
+        run: |
+          $full = 'src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe'
+          $fw   = 'src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe'
+          $hFull = (Get-FileHash -Algorithm SHA256 -LiteralPath $full).Hash.ToLowerInvariant()
+          $hFw   = (Get-FileHash -Algorithm SHA256 -LiteralPath $fw).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$full.sha256", "$hFull  fcon.exe`n")
+          [System.IO.File]::WriteAllText("$fw.sha256",   "$hFw  fcon-framework.exe`n")
+
+      - name: Attach exes and checksums to the release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe
-            src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe
+            fleet-connect/src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe
+            fleet-connect/src/fcon/bin/Release/net10.0-windows/win-x64/publish/fcon.exe.sha256
+            fleet-connect/src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe
+            fleet-connect/src/fcon/bin/Release/net10.0-windows/win-x64/publish-framework/fcon-framework.exe.sha256

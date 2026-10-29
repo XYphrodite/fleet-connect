@@ -42,6 +42,7 @@ static class LogicTests
             TestTailnetAndImportPlan();
             TestTuiWindowAndForm();
             TestTuiDashboardHeadless();
+            TestFleetSelfUpdate();
         }
         catch (Exception ex)
         {
@@ -554,5 +555,33 @@ static class LogicTests
         {
             Tailnet.NoStatus = prevNoStatus;
         }
+    }
+
+    static void TestFleetSelfUpdate()
+    {
+        var optsAuto = FleetUpdate.BuildOptions(useFramework: true, allowFallback: true);
+        Check(optsAuto.Repository == "XYphrodite/fleet-connect" &&
+              optsAuto.ChecksumMode == SelfUpdateKit.ChecksumMode.SidecarAsset &&
+              optsAuto.ExecutableAssetNames.Count == 2 &&
+              optsAuto.ExecutableAssetNames[0] == "fcon-framework.exe" &&
+              optsAuto.ExecutableAssetNames[1] == "fcon.exe",
+            "self-update options prefer framework exe with self-contained fallback");
+
+        var optsFull = FleetUpdate.BuildOptions(useFramework: false, allowFallback: false);
+        Check(optsFull.ExecutableAssetNames.Count == 1 && optsFull.ExecutableAssetNames[0] == "fcon.exe",
+            "self-update options select fcon.exe when framework disabled");
+
+        bool rejectedHost = false;
+        try { FleetUpdate.RequireInstalledPath(Path.Combine(root, "dotnet.exe")); }
+        catch (InvalidOperationException) { rejectedHost = true; }
+        Check(rejectedHost, "self-update refuses non-fcon host process path");
+
+        string okPath = FleetUpdate.RequireInstalledPath(Path.Combine(root, "fcon.exe"));
+        Check(okPath.EndsWith("fcon.exe", StringComparison.OrdinalIgnoreCase),
+            "self-update accepts installed fcon.exe path");
+
+        Check(FleetUpdate.ResolveRequestedTag("latest") == null &&
+              FleetUpdate.ResolveRequestedTag("v1.1.1") == "v1.1.1",
+            "self-update tag resolver maps latest->null and keeps pinned tag");
     }
 }

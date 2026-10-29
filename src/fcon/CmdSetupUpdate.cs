@@ -1,10 +1,9 @@
 // Setup (enable RDP/SSH on this machine, admin required) and update
 // (self-update from a GitHub release asset).
-using System.Diagnostics;
-using System.Net.Http;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
+using SelfUpdateKit;
 
 namespace FleetConnect;
 
@@ -281,37 +280,55 @@ static class CmdSetupUpdate
         return (nl >= 0 ? text.Substring(0, nl) : text).Trim();
     }
 
+
     // --------------------------------------------------------------- update
 
-    // The exe ships from a GitHub release asset, so FLEET_CONNECT_REF names a
-    // release tag here ('latest' by default), not a git branch.
+    // Powered by SelfUpdateKit: version comparison, .sha256 sidecar verification,
+    // atomic rename swap (.old-<timestamp>) and post-install --help health probe.
     public static int InvokeUpdate(List<string> updateArgs)
     {
         if (updateArgs.Count == 1 && Util.IsHelpCI(updateArgs[0]))
         {
             Console.WriteLine();
-            Render.Paint("  fcon update - update fcon from GitHub", ConsoleColor.Cyan);
+            Render.Paint("  fcon update - self-update fcon from GitHub Releases (SelfUpdateKit)", ConsoleColor.Cyan);
             Console.WriteLine();
-            Console.WriteLine("    fcon update                update to the latest release");
-            Console.WriteLine("    fcon update --check        only check if update is available");
+            Console.WriteLine("    fcon update                update to the latest release if newer");
+            Console.WriteLine("    fcon update --check        only check if a newer release is published");
+            Console.WriteLine("    fcon update --tag v1.1.1   install a specific release tag");
             Console.WriteLine("    fcon update --help         this text");
             Console.WriteLine();
-            Console.WriteLine("  Mirrors install.ps1: uses $env:FLEET_CONNECT_REPO / _REF / _DIR if set.");
-            Console.WriteLine("  Shows progress bar and status text like the panel.");
+            Console.WriteLine("  Verifies SHA-256 sidecar checksum, runs a --help probe, and atomically");
+            Console.WriteLine("  replaces the running executable (with automatic rollback on failure).");
             Console.WriteLine();
             return ExitCodes.Ok;
         }
 
         bool checkOnly = false;
+        string explicitTag = null;
         var unknown = new List<string>();
-        foreach (string a in updateArgs)
+        for (int i = 0; i < updateArgs.Count; i++)
         {
+            string a = updateArgs[i];
             if (a.Equals("--check", StringComparison.OrdinalIgnoreCase) ||
                 a.Equals("-check", StringComparison.OrdinalIgnoreCase) ||
                 a.Equals("check", StringComparison.OrdinalIgnoreCase))
+            {
                 checkOnly = true;
+            }
+            else if (a.Equals("--tag", StringComparison.OrdinalIgnoreCase) ||
+                     a.Equals("-tag", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= updateArgs.Count)
+                {
+                    Render.Fail("Missing value for " + a + ". Example: fcon update --tag v1.1.1");
+                    return ExitCodes.Error;
+                }
+                explicitTag = updateArgs[++i];
+            }
             else
+            {
                 unknown.Add(a);
+            }
         }
         if (unknown.Count > 0)
         {
@@ -319,118 +336,51 @@ static class CmdSetupUpdate
             return ExitCodes.Error;
         }
 
-        string repo = Environment.GetEnvironmentVariable("FLEET_CONNECT_REPO");
-        if (string.IsNullOrWhiteSpace(repo))
-            repo = "XYphrodite/fleet-connect";
-        string tag = Environment.GetEnvironmentVariable("FLEET_CONNECT_REF");
-        if (string.IsNullOrWhiteSpace(tag))
-            tag = "latest";
-        string target = Environment.GetEnvironmentVariable("FLEET_CONNECT_DIR");
-        if (string.IsNullOrWhiteSpace(target))
-            target = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs", "fleet-connect");
-        // Every downloader must agree: auto-detect .NET 10 unless the env var forces a flavour.
-        string fw = Environment.GetEnvironmentVariable("FLEET_CONNECT_FRAMEWORK");
-        bool useFramework;
-        if (string.IsNullOrWhiteSpace(fw))
-            useFramework = HasDotNet10Runtime();
-        else if (fw.Equals("auto", StringComparison.OrdinalIgnoreCase) || fw.Equals("detect", StringComparison.OrdinalIgnoreCase))
-            useFramework = HasDotNet10Runtime();
-        else if (fw == "0" || fw.Equals("false", StringComparison.OrdinalIgnoreCase) || fw.Equals("no", StringComparison.OrdinalIgnoreCase) || fw.Equals("off", StringComparison.OrdinalIgnoreCase))
-            useFramework = false;
-        else if (fw == "1" || fw.Equals("true", StringComparison.OrdinalIgnoreCase) || fw.Equals("yes", StringComparison.OrdinalIgnoreCase) || fw.Equals("on", StringComparison.OrdinalIgnoreCase))
-            useFramework = true;
-        else
-            useFramework = true; // any other truthy string forces framework
-        string exeName = useFramework ? "fcon-framework.exe" : "fcon.exe";
-        string source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
-            ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
-            : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
-        // Auto-detected framework may not be published in older releases (v1.0.1);
-        // probe and fall back to self-contained if the asset is missing.
-        bool isExplicitFramework = !string.IsNullOrWhiteSpace(fw) && !fw.Equals("auto", StringComparison.OrdinalIgnoreCase) && !fw.Equals("detect", StringComparison.OrdinalIgnoreCase);
-        if (useFramework && !isExplicitFramework && !UrlExists(source))
-        {
-            Render.Note("Framework asset not found at " + source + ", falling back to self-contained.");
-            exeName = "fcon.exe";
-            useFramework = false;
-            source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
-                ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
-                : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
-        }
-
         try
         {
+            string exePath = FleetUpdate.RequireInstalledPath(Environment.ProcessPath);
+            string requestedTag = FleetUpdate.ResolveRequestedTag(explicitTag);
+            var request = new SelfUpdateRequest(CheckOnly: checkOnly, Tag: requestedTag);
+
             Progress("Checking for updates...", 5);
-            Console.WriteLine();
-            Render.Paint("==> Checking for updates...", ConsoleColor.Cyan);
-            Render.Note("    " + source);
-
-            if (checkOnly)
-            {
-                Progress("Checking availability...", 40);
-                if (UrlExists(source))
+            var report = FleetUpdate.RunAsync(
+                exePath,
+                request,
+                p =>
                 {
-                    ProgressDone();
-                    Render.Paint("  Available: ", ConsoleColor.Green);
-                    Render.Note("  " + source);
-                    Render.Note("  Repository: " + repo + "  ref: " + tag);
-                    return ExitCodes.Ok;
-                }
-                ProgressDone();
-                Render.Fail("Failed to check update: " + source + " did not answer.");
-                return ExitCodes.Error;
-            }
+                    FleetUpdate.MapProgress(p, out string label, out int pct);
+                    Progress(label, pct);
+                },
+                CancellationToken.None).GetAwaiter().GetResult();
 
-            Progress("Downloading " + exeName + "...", 25);
-            Render.Paint("==> Downloading " + exeName + "...", ConsoleColor.Cyan);
-            Render.Note("    " + source);
-            string tmp = Path.Combine(Path.GetTempPath(),
-                "fcon-update-" + Guid.NewGuid().ToString("N") + ".exe");
-            DownloadWithProgress(source, tmp, exeName);
-
-            Progress("Verifying file...", 55);
-            Render.Paint("==> Verifying file...", ConsoleColor.Cyan);
-            if (!LooksLikeExe(tmp))
-                throw new Exception("What came back from " + source +
-                    " is not an executable. Is the release published?");
-            Render.Note("    file is valid");
-
-            Progress("Installing to " + target + "...", 80);
-            Render.Paint("==> Installing to " + target + "...", ConsoleColor.Cyan);
-            Directory.CreateDirectory(target);
-            string exePath = Path.Combine(target, "fcon.exe");
-            if (File.Exists(exePath))
-                File.Copy(exePath, exePath + ".bak", overwrite: true);
-            // The running exe is locked, so stage aside and let a detached
-            // cmd move it into place after this process exits.
-            string staged = Path.Combine(target, "fcon.new.exe");
-            File.Copy(tmp, staged, overwrite: true);
-            try { File.Delete(tmp); } catch { }
-            foreach (string stale in new[] { "fcon.cmd", "fleet-connect.ps1", "fcon.ps1" })
-            {
-                try
-                {
-                    string p = Path.Combine(target, stale);
-                    if (File.Exists(p))
-                        File.Delete(p);
-                }
-                catch { }
-            }
-            Render.Note("    staged, restart swaps it in");
-            SpawnSwap(staged, exePath);
-
-            EnsureTargetOnPath(target);
-
-            Progress("Done!", 100);
             ProgressDone();
             Console.WriteLine();
-            Render.Paint("  fleet-connect staged: " + target, ConsoleColor.Green);
-            Render.Note("  version: " + repo + "@" + tag);
+
+            if (report.Status == SelfUpdateStatus.AlreadyCurrent)
+            {
+                Render.Paint("  Up to date: v" + report.Installed + " (" + report.Tag + ")", ConsoleColor.Green);
+                Console.WriteLine();
+                return ExitCodes.Ok;
+            }
+
+            if (report.Status == SelfUpdateStatus.UpdateAvailable)
+            {
+                Render.Paint("  Update available: v" + report.Installed + " -> " + report.Tag, ConsoleColor.Green);
+                if (report.ReleaseDescriptor != null)
+                    Render.Note("  " + report.ReleaseDescriptor.ExecutableUrl);
+                Console.WriteLine();
+                return ExitCodes.Ok;
+            }
+
+            string installDir = Path.GetDirectoryName(exePath);
+            if (!string.IsNullOrEmpty(installDir))
+                EnsureTargetOnPath(installDir);
+
+            Render.Paint("  Updated fcon: v" + report.Installed + " -> " + report.Tag, ConsoleColor.Green);
+            Render.Note("  verified SHA-256 checksum & --help health probe");
+            Render.Note("  binary: " + exePath);
             Render.Note("  machine list: " + CsvStore.GetListPath());
             Console.WriteLine();
-            Render.Note("  Done. Restart the terminal; the new fcon.exe lands on next start.");
             return ExitCodes.Ok;
         }
         catch (Exception ex)
@@ -442,102 +392,42 @@ static class CmdSetupUpdate
         }
     }
 
-    static bool UrlExists(string url)
-    {
-        try
-        {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            using var req = new HttpRequestMessage(HttpMethod.Head, url);
-            using var resp = http.Send(req);
-            return resp.IsSuccessStatusCode;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     public static int InvokeUpdateFromTui(Action<string, int> onProgress, Action<string> onLog,
                                           out string summary)
     {
         summary = "";
-        string repo = Environment.GetEnvironmentVariable("FLEET_CONNECT_REPO");
-        if (string.IsNullOrWhiteSpace(repo))
-            repo = "XYphrodite/fleet-connect";
-        string tag = Environment.GetEnvironmentVariable("FLEET_CONNECT_REF");
-        if (string.IsNullOrWhiteSpace(tag))
-            tag = "latest";
-        string target = Environment.GetEnvironmentVariable("FLEET_CONNECT_DIR");
-        if (string.IsNullOrWhiteSpace(target))
-            target = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "Programs", "fleet-connect");
-
-        string fw = Environment.GetEnvironmentVariable("FLEET_CONNECT_FRAMEWORK");
-        bool useFramework;
-        if (string.IsNullOrWhiteSpace(fw))
-            useFramework = HasDotNet10Runtime();
-        else if (fw.Equals("auto", StringComparison.OrdinalIgnoreCase) || fw.Equals("detect", StringComparison.OrdinalIgnoreCase))
-            useFramework = HasDotNet10Runtime();
-        else if (fw == "0" || fw.Equals("false", StringComparison.OrdinalIgnoreCase) || fw.Equals("no", StringComparison.OrdinalIgnoreCase) || fw.Equals("off", StringComparison.OrdinalIgnoreCase))
-            useFramework = false;
-        else
-            useFramework = true;
-
-        string exeName = useFramework ? "fcon-framework.exe" : "fcon.exe";
-        string source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
-            ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
-            : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
-
-        bool isExplicitFramework = !string.IsNullOrWhiteSpace(fw) &&
-            !fw.Equals("auto", StringComparison.OrdinalIgnoreCase) &&
-            !fw.Equals("detect", StringComparison.OrdinalIgnoreCase);
-
         try
         {
-            onProgress?.Invoke("Checking " + repo + "@" + tag + "...", 5);
-            if (useFramework && !isExplicitFramework && !UrlExists(source))
-            {
-                onLog?.Invoke("Framework asset not found, falling back to self-contained fcon.exe");
-                exeName = "fcon.exe";
-                source = tag.Equals("latest", StringComparison.OrdinalIgnoreCase)
-                    ? "https://github.com/" + repo + "/releases/latest/download/" + exeName
-                    : "https://github.com/" + repo + "/releases/download/" + tag + "/" + exeName;
-            }
+            string exePath = FleetUpdate.RequireInstalledPath(Environment.ProcessPath);
+            string requestedTag = FleetUpdate.ResolveRequestedTag(null);
+            var request = new SelfUpdateRequest(CheckOnly: false, Tag: requestedTag);
 
-            onLog?.Invoke("Downloading " + source);
-            onProgress?.Invoke("Downloading " + exeName + "...", 25);
-            string tmp = Path.Combine(Path.GetTempPath(),
-                "fcon-update-" + Guid.NewGuid().ToString("N") + ".exe");
-            DownloadWithProgress(source, tmp, exeName, onProgress);
-
-            onProgress?.Invoke("Verifying executable...", 60);
-            if (!LooksLikeExe(tmp))
-                throw new Exception("Downloaded asset from " + source + " is not a valid Windows executable.");
-
-            onProgress?.Invoke("Staging update...", 85);
-            Directory.CreateDirectory(target);
-            string exePath = Path.Combine(target, "fcon.exe");
-            if (File.Exists(exePath))
-                File.Copy(exePath, exePath + ".bak", overwrite: true);
-            string staged = Path.Combine(target, "fcon.new.exe");
-            File.Copy(tmp, staged, overwrite: true);
-            try { File.Delete(tmp); } catch { }
-            foreach (string stale in new[] { "fcon.cmd", "fleet-connect.ps1", "fcon.ps1" })
-            {
-                try
+            onProgress?.Invoke("Checking GitHub releases...", 8);
+            var report = FleetUpdate.RunAsync(
+                exePath,
+                request,
+                p =>
                 {
-                    string p = Path.Combine(target, stale);
-                    if (File.Exists(p))
-                        File.Delete(p);
-                }
-                catch { }
+                    FleetUpdate.MapProgress(p, out string label, out int pct);
+                    onProgress?.Invoke(label, pct);
+                },
+                CancellationToken.None).GetAwaiter().GetResult();
+
+            if (report.Status == SelfUpdateStatus.AlreadyCurrent)
+            {
+                onProgress?.Invoke("Up to date", 100);
+                summary = "Already up to date (v" + report.Installed + ")";
+                onLog?.Invoke(summary);
+                return ExitCodes.Ok;
             }
-            SpawnSwap(staged, exePath);
-            EnsureTargetOnPath(target, quiet: true);
-            onProgress?.Invoke("Update staged", 100);
-            summary = "Update staged (" + repo + "@" + tag + "). Close fcon to swap in the new binary.";
-            onLog?.Invoke(summary);
+
+            string installDir = Path.GetDirectoryName(exePath);
+            if (!string.IsNullOrEmpty(installDir))
+                EnsureTargetOnPath(installDir, quiet: true);
+
+            onProgress?.Invoke("Updated to " + report.Tag, 100);
+            summary = "Updated v" + report.Installed + " -> " + report.Tag + " — restart fcon to use it";
+            onLog?.Invoke(summary + " (" + exePath + ")");
             return ExitCodes.Ok;
         }
         catch (Exception ex)
@@ -545,81 +435,6 @@ static class CmdSetupUpdate
             summary = "Update failed: " + ex.Message;
             onLog?.Invoke(summary);
             return ExitCodes.Error;
-        }
-    }
-
-    static void DownloadWithProgress(string url, string dest, string exeName = "fcon.exe",
-                                     Action<string, int> onProgress = null)
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
-        using var resp = http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
-        resp.EnsureSuccessStatusCode();
-        long? total = resp.Content.Headers.ContentLength;
-        using var net = resp.Content.ReadAsStream();
-        using var file = File.OpenWrite(dest);
-        var buf = new byte[81920];
-        long done = 0;
-        int lastPct = -1;
-        while (true)
-        {
-            int n = net.Read(buf, 0, buf.Length);
-            if (n <= 0)
-                break;
-            file.Write(buf, 0, n);
-            done += n;
-            if (total.HasValue && total.Value > 0)
-            {
-                int pct = (int)(done * 100 / total.Value);
-                if (pct != lastPct)
-                {
-                    lastPct = pct;
-                    string label = "Downloading " + exeName + "... " + pct + "%";
-                    int barPct = 25 + pct * 30 / 100;
-                    if (onProgress != null)
-                        onProgress(label, barPct);
-                    else
-                        Progress(label, barPct);
-                }
-            }
-        }
-    }
-
-    static bool LooksLikeExe(string path)
-    {
-        try
-        {
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Length < 40 * 1024)
-                return false;
-            var magic = new byte[2];
-            using (var fs = File.OpenRead(path))
-                if (fs.Read(magic, 0, 2) < 2)
-                    return false;
-            return magic[0] == 0x4D && magic[1] == 0x5A; // 'MZ'
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    static void SpawnSwap(string staged, string exePath)
-    {
-        try
-        {
-            string cmd = "/c timeout /t 2 /nobreak >nul & move /y \"" +
-                staged + "\" \"" + exePath + "\" >nul";
-            var psi = new ProcessStartInfo("cmd.exe", cmd)
-            {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
-            Process.Start(psi);
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Could not stage the update (" + ex.Message +
-                "). Copy " + staged + " over " + exePath + " manually after closing fcon.");
         }
     }
 
@@ -663,49 +478,5 @@ static class CmdSetupUpdate
     static void ProgressDone()
     {
         try { Console.WriteLine(); } catch { }
-    }
-
-    static bool HasDotNet10Runtime()
-    {
-        // Mirrors install.ps1 / setup-client.ps1 Test-DotNet10.
-        try
-        {
-            var r = Util.RunCapture("dotnet", "--list-runtimes");
-            if (r.ExitCode == 0 && (r.StdOut ?? "").Contains("Microsoft.NETCore.App 10."))
-                return true;
-        }
-        catch { }
-        try
-        {
-            string progFiles = Environment.GetEnvironmentVariable("ProgramFiles");
-            if (!string.IsNullOrEmpty(progFiles))
-            {
-                string shared = Path.Combine(progFiles, "dotnet", "shared", "Microsoft.NETCore.App");
-                if (Directory.Exists(shared))
-                {
-                    foreach (string dir in Directory.GetDirectories(shared))
-                    {
-                        if (Path.GetFileName(dir).StartsWith("10.", StringComparison.Ordinal))
-                            return true;
-                    }
-                }
-            }
-        }
-        catch { }
-        // DOTNET_ROOT or LocalAppData\Programs\dotnet fallback
-        foreach (string root in new[] { Environment.GetEnvironmentVariable("DOTNET_ROOT"), Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "dotnet") })
-        {
-            if (string.IsNullOrEmpty(root)) continue;
-            try
-            {
-                string p = Path.Combine(root, "shared", "Microsoft.NETCore.App");
-                if (Directory.Exists(p))
-                    foreach (string dir in Directory.GetDirectories(p))
-                        if (Path.GetFileName(dir).StartsWith("10.", StringComparison.Ordinal))
-                            return true;
-            }
-            catch { }
-        }
-        return false;
     }
 }

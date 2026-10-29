@@ -314,7 +314,7 @@ internal sealed partial class Dashboard
         {
             try
             {
-                int code = CmdSetupUpdate.InvokeUpdateFromTui(
+                _ = CmdSetupUpdate.InvokeUpdateFromTui(
                     (status, pct) =>
                     {
                         progress = new ProgressReport { Label = status, Percent = Math.Clamp(pct, 0, 100) };
@@ -322,7 +322,7 @@ internal sealed partial class Dashboard
                     },
                     line => log.Add(line),
                     out string summary);
-                Banner = code == ExitCodes.Ok ? "Update staged! Restart fcon to apply." : summary;
+                Banner = summary;
             }
             finally
             {

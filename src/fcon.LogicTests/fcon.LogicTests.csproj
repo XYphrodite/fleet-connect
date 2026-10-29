@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <PackageReference Include="Spectre.Console" Version="0.57.2" />
+    <ProjectReference Include="..\..\..\self-update-kit\src\SelfUpdateKit\SelfUpdateKit.csproj" />
   </ItemGroup>
 
   <!-- Exercise the real sources, except CmdSetupUpdate.cs (registry, Windows
@@ -31,6 +32,7 @@
     <Compile Include="../fcon/Connect.cs" />
     <Compile Include="../fcon/CmdMisc.cs" />
     <Compile Include="../fcon/CmdSyncImport.cs" />
+    <Compile Include="../fcon/FleetUpdate.cs" />
     <Compile Include="../fcon/Program.cs" />
     <Compile Include="../fcon/Tui/*.cs" />
     <Compile Include="Harness.cs" />

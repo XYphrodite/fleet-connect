@@ -17,6 +17,7 @@ static class Program
     {
         try
         {
+            FleetUpdate.CleanupRetiredOnStartup(Environment.ProcessPath);
             bool noStatus = false, yes = false, help = false;
             var positional = new List<string>();
             foreach (string a in args)
@@ -39,7 +40,11 @@ static class Program
             NoStatusSwitch = noStatus;
             Tailnet.NoStatus = noStatus;
 
-            if (help && positional.Count <= 1)
+            bool subHasHelp = positional.Count == 1 &&
+                Regex.IsMatch(positional[0], "^(?i)(add|sync|setup|update)$");
+            if (help && subHasHelp)
+                positional.Add("--help");
+            else if (help && positional.Count <= 1)
                 return CmdMisc.InvokeHelp();
 
             string name = positional.Count >= 1 ? positional[0] : null;
